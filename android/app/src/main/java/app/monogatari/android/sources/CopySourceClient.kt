@@ -71,7 +71,8 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
     private val contentBackups = (contentAlternates ?: if (contentApi.host == "www.manga2026.xyz") listOf(CopySource.CONTENT_BACKUP) else emptyList()).map(::checkedAddress)
     @Volatile private var preferredContent = if (contentAlternates == null && contentApi.host == "www.manga2026.xyz")
         checkedAddress(CopySource.CONTENT_BACKUP) else contentApi
-    private val imageHttp = http.newBuilder().callTimeout(90, java.util.concurrent.TimeUnit.SECONDS).build()
+    private val imageHttp = http.newBuilder().followRedirects(true).followSslRedirects(false)
+        .callTimeout(90, java.util.concurrent.TimeUnit.SECONDS).build()
     private val http = http.newBuilder().connectTimeout(minOf(http.connectTimeoutMillis.toLong(), 8000), java.util.concurrent.TimeUnit.MILLISECONDS)
         .readTimeout(minOf(http.readTimeoutMillis.toLong(), 20_000), java.util.concurrent.TimeUnit.MILLISECONDS).callTimeout(25, java.util.concurrent.TimeUnit.SECONDS).build()
     private val http1 = this.http.newBuilder().connectionPool(ConnectionPool()).protocols(listOf(Protocol.HTTP_1_1)).build()
@@ -124,6 +125,12 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
             val canRetry = fallback && !content && api != contentApi && url.host == api.host && url.port == api.port &&
                 url.encodedPath.startsWith("/api/v3/") && (failure !is HttpFailure || failure.status >= 500)
             if (!canRetry) throw IOException(connectionFailure(url, label, failure), failure)
+            // The legacy catalog ignores these modern filters; don't show an unfiltered
+            // list under the finished/status/region collection the user selected.
+            if (url.encodedPath == "/api/v3/comics" && listOf("top", "status").any { !url.queryParameter(it).isNullOrEmpty() }) {
+                throw IOException("筛选目录暂时连接失败，备用接口不支持这个筛选条件。请稍后重试或更换网络。\n" +
+                    connectionFailure(url, label, failure), failure)
+            }
             val alternate = contentApi.newBuilder().encodedPath(url.encodedPath).encodedQuery(url.encodedQuery)
                 .apply { if (url.queryParameter("platform") == null) addQueryParameter("platform", "3") }.build()
             try { return result(alternate, label, true) }

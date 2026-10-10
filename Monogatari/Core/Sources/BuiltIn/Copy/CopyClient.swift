@@ -230,6 +230,15 @@ struct CopyClient: Sendable {
                 if networkFailure { throw CopyError.message(connectionFailure(url, label: label, error: error)) }
                 throw error
             }
+            // The legacy catalog silently ignores the modern collection/status filters.
+            // Returning its unfiltered list would label ongoing books as finished.
+            let filters = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            if url.path == "/api/v3/comics", filters.contains(where: {
+                ["top", "status"].contains($0.name) && !($0.value ?? "").isEmpty
+            }) {
+                throw CopyError.message("筛选目录暂时连接失败，备用接口不支持这个筛选条件。请稍后重试或更换网络。\n" +
+                    connectionFailure(url, label: label, error: error))
+            }
             var alternate = URLComponents(url: contentBase, resolvingAgainstBaseURL: false)!
             let original = URLComponents(url: url, resolvingAgainstBaseURL: false)!
             alternate.percentEncodedPath = original.percentEncodedPath

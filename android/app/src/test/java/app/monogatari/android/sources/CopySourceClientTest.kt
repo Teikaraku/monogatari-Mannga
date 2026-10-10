@@ -22,6 +22,14 @@ import java.util.concurrent.atomic.AtomicInteger
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class CopySourceClientTest {
+    @Test fun imagesKeepTheirRedirectSupportAfterNetworkRecoveryIsAdded() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "/actual.webp"))
+            server.enqueue(MockResponse().setBody("image-data"))
+            assertEquals("image-data", client(server).imageBytes(server.url("/old.webp").toString()).toString(Charsets.UTF_8))
+            assertEquals(2, server.requestCount)
+        }
+    }
     @Test fun imagesRecoverFromTwoTemporaryTlsClosuresWithoutSendingApiIdentity() {
         MockWebServer().use { server ->
             val attempts = AtomicInteger()
@@ -363,6 +371,22 @@ class CopySourceClientTest {
             assertNull(request.getHeader("Authorization"))
         } }
     }
+    @Test fun catalogFiltersCannotSilentlyFallBackToAnUnfilteredLegacyList() {
+        MockWebServer().use { browse -> MockWebServer().use { content ->
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                if (chain.request().url.port == browse.port) throw SSLHandshakeException("fixture TLS failure")
+                chain.proceed(chain.request())
+            }.build()
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, browse.url("/").toString())
+            val client = CopySourceClient(source, http, browse.url("/").toString(), contentAddress = content.url("/").toString())
+            for (query in listOf(CopyQuery(kind = "finished"), CopyQuery(status = "1"), CopyQuery(region = "japan"))) {
+                val failure = runCatching { client.catalog(query) }.exceptionOrNull()
+                assertTrue(failure!!.message!!.contains("备用接口不支持这个筛选条件"))
+            }
+            assertEquals(0, content.requestCount)
+        } }
+    }
+
     @Test fun twoTlsFailuresRemainVisibleAndDoNotDisableCertificateVerification() {
         MockWebServer().use { browse -> MockWebServer().use { content ->
             val http = OkHttpClient.Builder().addInterceptor { throw SSLHandshakeException("fixture TLS failure") }.build()

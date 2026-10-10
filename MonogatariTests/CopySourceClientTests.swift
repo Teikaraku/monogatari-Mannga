@@ -404,6 +404,19 @@ struct CopySourceClientTests {
         #expect(fixture.requests.count == 3)
     }
 
+    @Test func finishedFilterCannotSilentlyFallBackToAnUnfilteredCatalog() async {
+        let fixture = CopyFixture { _, backup in
+            backup ? .json("{\"code\":200,\"results\":{\"list\":[\(comic)],\"total\":1}}") : .failure(URLError(.secureConnectionFailed))
+        }
+        do {
+            _ = try await fixture.client.catalog(.init(kind: "finished"), page: 1)
+            Issue.record("The legacy catalog doesn't implement this filter")
+        } catch {
+            #expect(error.localizedDescription.contains("备用接口不支持这个筛选条件"))
+            #expect(fixture.requests.allSatisfy { $0.url?.host == fixture.browse.host })
+        }
+    }
+
     @Test func bothTlsFailuresRemainVisible() async {
         let fixture = CopyFixture { _, _ in .failure(URLError(.serverCertificateUntrusted)) }
         do {
