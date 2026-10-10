@@ -5,6 +5,7 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.ConnectionPool
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
@@ -12,6 +13,12 @@ import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.time.ZoneId
 import java.util.UUID
+import java.io.IOException
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import javax.net.ssl.SSLException
+import javax.net.ssl.SSLPeerUnverifiedException
+import java.security.cert.CertificateException
 
 object CopySource {
     const val ID = "copy2026"
@@ -32,7 +39,8 @@ data class CopySection(val id: String, val title: String, val entries: List<Mang
 data class CopyFeature(val title: String, val image: String, val manga: Manga)
 data class CopyTopic(val key: String, val title: String, val image: String, val subtitle: String = "", val intro: String = "")
 data class CopyRanking(val period: String, val title: String, val entries: List<Manga>)
-data class CopyHome(val features: List<CopyFeature>, val sections: List<CopySection>, val topics: List<CopyTopic>, val rankings: List<CopyRanking> = emptyList())
+data class CopyHome(val features: List<CopyFeature>, val sections: List<CopySection>, val topics: List<CopyTopic>, val rankings: List<CopyRanking> = emptyList(),
+    val notice: String? = null, val diagnostics: String? = null)
 data class CopyQuery(val kind: String = "catalog", val keyword: String = "", val theme: String = "",
     val order: String = "-datetime_updated", val status: String = "", val region: String = "",
     val rankPeriod: String = "day", val audience: String = "male", val topic: String = "")
@@ -57,15 +65,57 @@ class CopySourceClient(val source: SourceConfig, private val http: OkHttpClient,
         contentApi.newBuilder().addPathSegments(path.trimStart('/')).addQueryParameter("platform", "3")
             .apply { parameters.forEach { (key, value) -> addQueryParameter(key, value) } }.build()
 
-    private fun result(url: HttpUrl, label: String, content: Boolean = false): JSONObject {
+    private class HttpFailure(val status: Int, message: String) : IOException(message)
+    private class EmptyHomeFailure(message: String) : IllegalStateException(message)
+
+    private fun result(url: HttpUrl, label: String, content: Boolean = false, fallback: Boolean = true): JSONObject {
+        try { return requestWithRetry(url, label, content) }
+        catch (failure: IOException) {
+            if (Thread.currentThread().isInterrupted) throw failure
+            val canRetry = fallback && !content && api != contentApi && url.host == api.host && url.port == api.port &&
+                url.encodedPath.startsWith("/api/v3/") && (failure !is HttpFailure || failure.status >= 500)
+            if (!canRetry) throw IOException(connectionFailure(url, label, failure), failure)
+            val alternate = contentApi.newBuilder().encodedPath(url.encodedPath).encodedQuery(url.encodedQuery)
+                .apply { if (url.queryParameter("platform") == null) addQueryParameter("platform", "3") }.build()
+            try { return requestWithRetry(alternate, label, true) }
+            catch (secondary: Exception) {
+                throw IOException(connectionFailure(url, label, failure) + "\n备用 HTTPS 接口：" +
+                    connectionFailure(alternate, label, secondary), secondary)
+            }
+        }
+    }
+
+    private fun requestWithRetry(url: HttpUrl, label: String, content: Boolean): JSONObject {
+        try { return requestResult(url, label, content) }
+        catch (failure: IOException) {
+            val certificateFailure = generateSequence<Throwable>(failure) { it.cause }
+                .any { it is CertificateException || it is SSLPeerUnverifiedException }
+            if (failure is HttpFailure || certificateFailure || Thread.currentThread().isInterrupted) throw failure
+            // Switching Wi-Fi/cellular can leave a stale pooled connection. Retry once with a fresh pool.
+            val fresh = http.newBuilder().connectionPool(ConnectionPool()).build()
+            try { return requestResult(url, label, content, fresh) }
+            finally { fresh.connectionPool.evictAll() }
+        }
+    }
+
+    private fun connectionFailure(url: HttpUrl, label: String, error: Exception): String {
+        val reason = when (error) {
+            is SSLException -> "安全连接失败（TLS），请检查网络或稍后重试"
+            else -> error.message ?: "网络请求失败"
+        }
+        return "拷贝漫画${label}（${url.host}）：$reason"
+    }
+
+    private fun requestResult(url: HttpUrl, label: String, content: Boolean, transport: OkHttpClient = http): JSONObject {
         val request = Request.Builder().url(url).header("User-Agent", "Monogatari/0.9")
-            .header("Accept", "application/json").header("version", if (content) contentVersion else version).header("platform", "3")
+            .header("Accept", "application/json").header("Cache-Control", "no-cache")
+            .header("version", if (content) contentVersion else version).header("platform", "3")
             .apply { if (content) { header("dnts", "3"); header("webp", "1"); header("Referer", website.toString()) } else header("region", "0") }.build()
-        return http.newCall(request).execute().use { response ->
+        return transport.newCall(request).execute().use { response ->
             val bytes = response.body?.byteStream()?.use { SourceHost.readBounded(it, 20 * 1024 * 1024) } ?: byteArrayOf()
             val json = runCatching { JSONObject(bytes.toString(Charsets.UTF_8)) }.getOrNull()
             val message = json?.stringOrNull("message")?.takeIf { it.isNotBlank() }
-            require(response.isSuccessful) { "拷贝漫画${label}失败：${message ?: "HTTP ${response.code}"}" }
+            if (!response.isSuccessful) throw HttpFailure(response.code, "拷贝漫画${label}失败：${message ?: "HTTP ${response.code}"}")
             requireNotNull(json) { "拷贝漫画${label}接口未返回 JSON 数据" }
             require(json.optInt("code", 200) == 200) { "拷贝漫画${label}：${message ?: "接口访问受限"}" }
             json.optJSONObject("results") ?: error("拷贝漫画暂未返回${label}数据，可能存在接口或客户端访问限制。")
@@ -73,14 +123,28 @@ class CopySourceClient(val source: SourceConfig, private val http: OkHttpClient,
     }
 
     fun home(): CopyHome {
-        val json = result(apiUrl("api/v3/h5/homeIndex"), "首页")
+        try { return parseHome(result(apiUrl("api/v3/h5/homeIndex"), "首页", fallback = false)) }
+        catch (error: Exception) {
+            if (Thread.currentThread().isInterrupted) throw error
+            if (error is EmptyHomeFailure) {
+                try { return parseHome(result(apiUrl("api/v3/h5/homeIndex"), "首页", fallback = false)) }
+                catch (retry: Exception) {
+                    if (Thread.currentThread().isInterrupted) throw retry
+                    return recoverHome(retry)
+                }
+            }
+            return recoverHome(error)
+        }
+    }
+
+    internal fun parseHome(json: JSONObject): CopyHome {
         val definitions = listOf("recComics" to "为你推荐", "newComics" to "新书入库", "hotComics" to "热门更新",
             "rankDayComics" to "今日热门", "finishComics" to "完结佳作")
         val sections = definitions.mapNotNull { (key, title) ->
             val entries = items(json.opt(key)).map(::manga).distinctBy { it.id }
             if (entries.isEmpty()) null else CopySection(key, title, entries)
         }
-        val features = json.optJSONArray("banners").objects().filter { it.optInt("type") == 1 && it.optJSONObject("comic") != null }.map { banner ->
+        val features = items(json.opt("banners")).filter { it.optInt("type") == 1 && it.optJSONObject("comic") != null }.map { banner ->
             val comic = manga(banner.getJSONObject("comic"))
             CopyFeature(banner.optString("brief").ifBlank { comic.title }, webUrl(banner.optString("cover")), comic)
         }
@@ -89,7 +153,43 @@ class CopySourceClient(val source: SourceConfig, private val http: OkHttpClient,
             val key = "rank${period.replaceFirstChar(Char::uppercaseChar)}Comics"
             items(json.opt(key)).map(::manga).distinctBy { it.id }.takeIf { it.isNotEmpty() }?.let { CopyRanking(period, title, it) }
         }
+        if (sections.isEmpty() && features.isEmpty() && rankings.isEmpty())
+            throw EmptyHomeFailure("首页返回成功，但没有可显示的漫画。返回结构：${homeSchema(json)}")
         return CopyHome(features, sections, topics, rankings)
+    }
+
+    private fun homeSchema(json: JSONObject): String = json.keys().asSequence().sorted().take(16).joinToString("；").ifEmpty { "空对象 {}" }
+
+    /** The aggregated homepage can fail independently of the catalog. Never cache that as an empty success. */
+    private fun recoverHome(primary: Exception): CopyHome {
+        data class Feed(val id: String, val title: String, val books: List<Manga> = emptyList(),
+            val topics: List<CopyTopic> = emptyList(), val error: String? = null)
+        val requests = listOf(
+            "newComics" to "新书入库", "hotComics" to "热门更新", "finishComics" to "完结佳作",
+            "day" to "日榜", "week" to "周榜", "month" to "月榜", "topics" to "精选专题")
+        val executor = Executors.newFixedThreadPool(3)
+        val feeds = try {
+            executor.invokeAll(requests.map { (id, title) -> Callable {
+                try {
+                    if (id == "topics") Feed(id, title, topics = topics(1).entries)
+                    else {
+                        val query = when (id) {
+                            "newComics" -> CopyQuery(order = "-datetime_created")
+                            "hotComics" -> CopyQuery(order = "-datetime_updated")
+                            "finishComics" -> CopyQuery(kind = "finished")
+                            else -> CopyQuery(kind = "ranking", rankPeriod = id)
+                        }
+                        Feed(id, title, books = catalog(query).entries)
+                    }
+                } catch (failure: Exception) { Feed(id, title, error = "$title：${failure.message}") }
+            } }).map { it.get() }
+        } finally { executor.shutdownNow() }
+        val sections = feeds.filter { it.id.endsWith("Comics") && it.books.isNotEmpty() }.map { CopySection(it.id, it.title, it.books) }
+        val rankings = feeds.filter { it.id in setOf("day", "week", "month") && it.books.isNotEmpty() }.map { CopyRanking(it.id, it.title, it.books) }
+        val diagnostics = (listOf("首页接口：${primary.message}") + feeds.mapNotNull { it.error }).joinToString("\n")
+        require(sections.isNotEmpty() || rankings.isNotEmpty()) { "首页加载失败，请稍后重试。\n$diagnostics" }
+        return CopyHome(emptyList(), sections, feeds.first { it.id == "topics" }.topics, rankings,
+            notice = "首页接口暂不可用，已从漫画目录恢复内容。", diagnostics = diagnostics)
     }
 
     fun catalog(query: CopyQuery, page: Int = 1): CopyPage<Manga> {
@@ -209,7 +309,11 @@ class CopySourceClient(val source: SourceConfig, private val http: OkHttpClient,
     }
     private fun webUrl(address: String): String = address.takeIf { it.isNotBlank() }?.let { website.resolve(it)?.toString() ?: error("无效漫画资源地址") }.orEmpty()
     private fun pathKey(key: String): String = key.also { require(it.isNotBlank() && it.length <= 256 && '/' !in it && '\\' !in it && it !in setOf(".", "..")) { "无效漫画标识" } }
-    private fun items(value: Any?): List<JSONObject> = when (value) { is JSONArray -> value.objects(); is JSONObject -> value.optJSONArray("list").objects(); else -> emptyList() }
+    private fun items(value: Any?): List<JSONObject> {
+        val array = when (value) { is JSONArray -> value; is JSONObject -> value.optJSONArray("list"); else -> null }
+            ?: return emptyList()
+        return (0 until array.length()).mapNotNull { array.optJSONObject(it) }
+    }
     private fun hasMore(data: JSONObject, count: Int, page: Int, limit: Int): Boolean {
         val offset = data.optInt("offset", (page - 1) * limit)
         val actualLimit = data.optInt("limit", limit)

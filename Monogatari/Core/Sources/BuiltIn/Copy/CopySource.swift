@@ -109,7 +109,8 @@ actor CopySourceRunner: Runner {
     func getMangaUpdate(manga: AidokuRunner.Manga, needsDetails: Bool, needsChapters: Bool) async throws -> AidokuRunner.Manga {
         var manga = manga
         if needsDetails {
-            manga = manga.copy(from: try await client.details(key: manga.key))
+            let details = try await client.details(key: manga.key)
+            manga = manga.copy(from: details)
         }
         if needsChapters {
             manga.chapters = try await client.chapters(key: manga.key)

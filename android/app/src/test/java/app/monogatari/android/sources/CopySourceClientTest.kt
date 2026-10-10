@@ -5,6 +5,8 @@ import app.monogatari.android.data.SourceConfig
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.RecordedRequest
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -12,6 +14,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import javax.net.ssl.SSLHandshakeException
+import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -36,6 +40,103 @@ class CopySourceClientTest {
             assertEquals("topic-one", home.topics.single().key)
             assertEquals("/api/v3/h5/homeIndex", server.takeRequest().requestUrl!!.encodedPath)
         }
+    }
+    @Test fun emptyAndUnrecognizedHomeResponsesCannotBecomeBlankSuccess() {
+        MockWebServer().use { server ->
+            val client = client(server)
+            for (json in listOf("{}", """{"recComics":{"list":[]}}""", """{"unexpected":{"list":[${comic("one")}]}}""")) {
+                assertNotNull(runCatching { client.parseHome(JSONObject(json)) }.exceptionOrNull())
+            }
+        }
+    }
+    @Test fun emptyHomeRecoversFromIndependentCatalogAndRankingEndpoints() {
+        MockWebServer().use { server ->
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse {
+                    val path = request.requestUrl!!.encodedPath
+                    return when (path) {
+                        "/api/v3/h5/homeIndex" -> response("""{"code":200,"results":{}}""")
+                        "/api/v3/topics" -> response("""{"code":200,"results":{"list":[],"total":0}}""")
+                        else -> response("""{"code":200,"results":{"list":[${comic("recovered")}],"total":1}}""")
+                    }
+                }
+            }
+            val home = client(server).home()
+            assertEquals(listOf("newComics", "hotComics", "finishComics"), home.sections.map { it.id })
+            assertEquals(listOf("day", "week", "month"), home.rankings.map { it.period })
+            assertTrue(home.diagnostics!!.contains("空对象"))
+            assertNotNull(home.notice)
+            assertEquals(9, server.requestCount)
+        }
+    }
+    @Test fun unavailableHomeAndCatalogShowAnErrorInsteadOfAnEmptyPage() {
+        MockWebServer().use { server ->
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest) = response("""{"code":200,"results":{}}""")
+            }
+            val failure = runCatching { client(server).home() }.exceptionOrNull()
+            assertNotNull(failure)
+            assertTrue(failure!!.message!!.contains("首页加载失败"))
+        }
+    }
+    @Test fun nullListEntriesDoNotDiscardOtherValidHomeCards() {
+        MockWebServer().use { server ->
+            val home = client(server).parseHome(JSONObject("""{"recComics":{"list":[null,${comic("one")},4]}}"""))
+            assertEquals("one", home.sections.single().entries.single().key)
+        }
+    }
+    @Test fun transientEmptyHomeRetriesBeforeLosingTheOriginalFeeds() {
+        MockWebServer().use { server ->
+            server.enqueue(response("""{"code":200,"results":{}}"""))
+            server.enqueue(response("""{"code":200,"results":{"recComics":{"list":[${comic("one")}]}}}"""))
+            val home = client(server).home()
+            assertEquals("one", home.sections.single().entries.single().key)
+            assertNull(home.notice)
+            assertEquals(2, server.requestCount)
+        }
+    }
+    @Test fun transientTlsFailureRetriesWithFreshConnectionsBeforeChangingService() {
+        MockWebServer().use { server ->
+            server.enqueue(response("""{"code":200,"results":{"list":[${comic("one")}],"total":1}}"""))
+            val calls = AtomicInteger()
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                if (calls.incrementAndGet() == 1) throw SSLHandshakeException("temporary handshake failure")
+                chain.proceed(chain.request())
+            }.build()
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, server.url("/").toString())
+            val client = CopySourceClient(source, http, server.url("/").toString(), contentAddress = server.url("/").toString())
+            assertEquals("one", client.catalog(CopyQuery()).entries.single().key)
+            assertEquals(2, calls.get())
+            assertEquals(1, server.requestCount)
+        }
+    }
+    @Test fun tlsFailuresUseKnownHttpsServiceAndPreserveQueryAndHeaders() {
+        MockWebServer().use { browse -> MockWebServer().use { content ->
+            content.enqueue(response("""{"code":200,"results":{"list":[${comic("one")}],"total":1}}"""))
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                if (chain.request().url.port == browse.port) throw SSLHandshakeException("fixture TLS failure")
+                chain.proceed(chain.request())
+            }.build()
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, browse.url("/").toString())
+            val client = CopySourceClient(source, http, browse.url("/").toString(), contentAddress = content.url("/").toString())
+            assertEquals("one", client.catalog(CopyQuery(kind = "ranking", rankPeriod = "month", audience = "female")).entries.single().key)
+            val request = content.takeRequest()
+            assertEquals("month", request.requestUrl!!.queryParameter("date_type"))
+            assertEquals("female", request.requestUrl!!.queryParameter("audience_type"))
+            assertEquals("2024.4.28", request.getHeader("version"))
+            assertEquals("no-cache", request.getHeader("Cache-Control"))
+            assertNull(request.getHeader("Authorization"))
+        } }
+    }
+    @Test fun twoTlsFailuresRemainVisibleAndDoNotDisableCertificateVerification() {
+        MockWebServer().use { browse -> MockWebServer().use { content ->
+            val http = OkHttpClient.Builder().addInterceptor { throw SSLHandshakeException("fixture TLS failure") }.build()
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, browse.url("/").toString())
+            val client = CopySourceClient(source, http, browse.url("/").toString(), contentAddress = content.url("/").toString())
+            val failure = runCatching { client.catalog(CopyQuery()) }.exceptionOrNull()
+            assertTrue(failure!!.message!!.contains("安全连接失败（TLS）"))
+            assertTrue(failure.message!!.contains("备用 HTTPS"))
+        } }
     }
     @Test fun searchEncodesKeywordsAndUsesReturnedPaginationCounts() {
         MockWebServer().use { server ->

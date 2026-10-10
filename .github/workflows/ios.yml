@@ -31,6 +31,16 @@ jobs:
             -skipPackagePluginValidation -skipMacroValidation \
             CODE_SIGN_IDENTITY= CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee build/xcodebuild.log | if command -v xcbeautify > /dev/null; then xcbeautify --renderer github-actions; else cat; fi
+      - name: 检查首页解析和安全连接处理
+        run: |
+          set -o pipefail
+          DEVICE=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin); rows=[x["udid"] for runtime,devices in sorted(d["devices"].items(),reverse=True) if ".iOS-" in runtime for x in devices if x["name"].startswith("iPhone") and x.get("isAvailable")]; print(rows[0])')
+          xcodebuild -project Monogatari.xcodeproj -scheme Monogatari -configuration Debug \
+            -destination "platform=iOS Simulator,id=$DEVICE" test \
+            -only-testing:MonogatariTests/CopySourceClientTests -parallel-testing-enabled NO \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGN_IDENTITY= CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee build/copy-source-tests.log | if command -v xcbeautify > /dev/null; then xcbeautify --renderer github-actions; else cat; fi
       - name: 打包 IPA
         run: |
           APP=build/Monogatari.xcarchive/Products/Applications/Monogatari.app
@@ -65,5 +75,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: xcodebuild-log
-          path: build/xcodebuild.log
+          path: |
+            build/xcodebuild.log
+            build/copy-source-tests.log
           if-no-files-found: ignore

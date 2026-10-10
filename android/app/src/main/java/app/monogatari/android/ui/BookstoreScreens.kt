@@ -118,6 +118,14 @@ private val rankPeriods = setOf("day", "week", "month", "total")
                     if (memory.error == null) item(key = "shelves-placeholder") { CopyShelfPlaceholder() }
                     return@LazyColumn
                 }
+                home.notice?.let { notice -> item(key = "home-notice") {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+                        Text(notice, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        home.diagnostics?.let { details ->
+                            TextButton({ vm.message = details }) { Text(pt("Loading details", "查看加载详情")) }
+                        }
+                    }
+                } }
                 copyHomeShelves(home, vm)
             }
         }

@@ -93,6 +93,18 @@ struct BookstoreView: View {
                     CopyErrorView(message: error) { model.refresh() }
                 }
                 if let home = model.home {
+                    if let notice = home.notice {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(notice).font(.system(size: 13)).foregroundColor(.secondary)
+                            if let details = home.diagnostics {
+                                DisclosureGroup("查看加载详情") {
+                                    Text(details).font(.system(size: 12)).textSelection(.enabled)
+                                }
+                                .font(.system(size: 13))
+                            }
+                        }
+                        .padding(16)
+                    }
                     shelves(home)
                 } else if model.error == nil {
                     CopyShelfPlaceholder()
