@@ -26,6 +26,7 @@ actor DownloadTask: Identifiable {
     let id: String
 
     private let cache: DownloadCache
+    private let copyImageClient = CopyClient()
     private var downloads: [Download]
     private weak var delegate: DownloadTaskDelegate?
 
@@ -413,7 +414,11 @@ extension DownloadTask {
         var attempt = 0
         while true {
             guard running && !Task.isCancelled else { return nil }
-            let result = try? await URLSession.shared.data(for: urlRequest)
+            let result = if CopyClient.isCopyImage(urlRequest.url) {
+                try? await copyImageClient.imageData(for: urlRequest)
+            } else {
+                try? await URLSession.shared.data(for: urlRequest)
+            }
             guard running && !Task.isCancelled else { return nil }
 
             // response was okay, bail out
@@ -530,7 +535,11 @@ extension DownloadTask {
                     let source = await SourceManager.shared.source(for: download.chapterIdentifier.sourceKey)
                 {
                     let request = await source.getModifiedImageRequest(url: coverUrl, context: nil)
-                    let result = try? await URLSession.shared.data(for: request)
+                    let result = if CopyClient.isCopyImage(request.url) {
+                        try? await copyImageClient.imageData(for: request)
+                    } else {
+                        try? await URLSession.shared.data(for: request)
+                    }
                     if let data = result?.0, self.isSuccessResponse(result?.1) {
                         try? data.write(to: coverPath)
                     }

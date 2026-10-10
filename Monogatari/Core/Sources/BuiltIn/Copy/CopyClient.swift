@@ -125,7 +125,7 @@ struct CopyClient: Sendable {
     private let browseBase: URL
     private let contentBase: URL
     private let contentAlternates: [URL]
-    private let contentRoute = CopyContentRoute()
+    private let contentRoute: CopyContentRoute
     private let searchBases: [URL]
     private let searchApiBase: URL?
     private let searchRoutes = CopySearchRoutes()
@@ -142,6 +142,7 @@ struct CopyClient: Sendable {
         self.searchBases = searchBases ?? [Self.mainlandWebsite, Self.website]
         self.searchApiBase = searchApiBase ?? (searchBases == nil ? Self.contentBackup : nil)
         self.contentAlternates = contentAlternates ?? (contentBase.host == Self.contentApi.host ? [Self.contentBackup] : [])
+        self.contentRoute = CopyContentRoute(preferred: contentAlternates == nil && contentBase == Self.contentApi ? Self.contentBackup : nil)
     }
 
     static let genres: [(id: String, name: String)] = [
@@ -293,6 +294,7 @@ struct CopyClient: Sendable {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("zh-Hant,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         request.setValue(content ? Self.contentVersion : Self.apiVersion, forHTTPHeaderField: "version")
         request.setValue("3", forHTTPHeaderField: "platform")
@@ -722,7 +724,7 @@ struct CopyClient: Sendable {
 
     private func webUrl(_ address: String?) -> String {
         guard let address, !address.isEmpty else { return "" }
-        return URL(string: address, relativeTo: Self.website)?.absoluteString ?? ""
+        return URL(string: address, relativeTo: Self.website).map { Self.imageUrl($0).absoluteString } ?? ""
     }
 
     private func pathKey(_ key: String) throws -> String {
@@ -816,10 +818,58 @@ struct CopyClient: Sendable {
     }
 
     func imageRequest(_ url: URL) -> URLRequest {
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: Self.imageUrl(url))
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("image/*", forHTTPHeaderField: "Accept")
         request.setValue(Self.website.absoluteString, forHTTPHeaderField: "Referer")
         return request
+    }
+
+    func imageData(for original: URLRequest) async throws -> (Data, URLResponse) {
+        var request = original
+        guard let address = request.url else { throw CopyError.message("无效漫画图片地址") }
+        request.url = Self.imageUrl(address)
+        let url = request.url!
+        var attempt = 0
+        while true {
+            try await policy.before(url)
+            let fresh = attempt > 0
+            let transport = fresh ? URLSession(configuration: session.configuration) : session
+            defer { if fresh { transport.invalidateAndCancel() } }
+            do {
+                let (data, response) = try await transport.data(for: request)
+                if let http = response as? HTTPURLResponse {
+                    if http.statusCode == 429 {
+                        throw await policy.limited(url, retryAfter: http.value(forHTTPHeaderField: "Retry-After"), serverDate: http.value(forHTTPHeaderField: "Date"), attempt: attempt)
+                    }
+                    guard (200..<300).contains(http.statusCode) else { throw CopyError.http(http.statusCode, "图片下载失败：HTTP \(http.statusCode)") }
+                }
+                guard data.count <= 50 * 1024 * 1024 else { throw CopyError.message("图片过大") }
+                return (data, response)
+            } catch {
+                try Task.checkCancellation()
+                let failure = error as NSError
+                let transient: [URLError.Code] = [.networkConnectionLost, .timedOut, .cannotConnectToHost, .dnsLookupFailed, .secureConnectionFailed]
+                let network = failure.domain == NSURLErrorDomain && transient.contains { $0.rawValue == failure.code }
+                let limited: Bool
+                if case CopyError.rateLimited(let until) = error { limited = until.timeIntervalSinceNow <= CopyRequestPolicy.maximumAutomaticWait }
+                else { limited = false }
+                guard attempt < 2, network || limited else { throw error }
+                attempt += 1
+            }
+        }
+    }
+
+    static func imageUrl(_ url: URL) -> URL {
+        guard url.scheme == "https", url.port == nil || url.port == 443, let host = url.host,
+              host.range(of: #"^s[0-9a-z]\.mangafunb\.fun$"#, options: .regularExpression) != nil,
+              var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        parts.host = host.replacingOccurrences(of: ".mangafunb.fun", with: ".mangafuna.xyz")
+        return parts.url ?? url
+    }
+
+    static func isCopyImage(_ url: URL?) -> Bool {
+        guard let url, url.scheme == "https", let host = url.host else { return false }
+        return host.range(of: #"^s[0-9a-z]\.(?:mangafunb\.fun|mangafuna\.xyz)$"#, options: .regularExpression) != nil
     }
 }

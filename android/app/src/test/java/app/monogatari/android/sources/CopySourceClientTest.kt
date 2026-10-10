@@ -22,6 +22,38 @@ import java.util.concurrent.atomic.AtomicInteger
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class CopySourceClientTest {
+    @Test fun imagesRecoverFromTwoTemporaryTlsClosuresWithoutSendingApiIdentity() {
+        MockWebServer().use { server ->
+            val attempts = AtomicInteger()
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                if (attempts.incrementAndGet() <= 2) throw SSLHandshakeException("Connection closed by peer")
+                chain.proceed(chain.request())
+            }.build()
+            server.enqueue(MockResponse().setBody("image-data"))
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, server.url("/").toString())
+            val client = CopySourceClient(source, http, server.url("/").toString(), contentAddress = server.url("/").toString())
+            assertEquals("image-data", client.imageBytes(server.url("/image.jpg").toString()).toString(Charsets.UTF_8))
+            assertEquals(3, attempts.get())
+            val request = server.takeRequest()
+            assertNull(request.getHeader("Authorization")); assertNull(request.getHeader("version"))
+        }
+    }
+    @Test fun chineseDataLanguagePreventsSuccessfulButEmptyHomeOnEnglishDevices() {
+        MockWebServer().use { server ->
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest) = response(if (request.getHeader("Accept-Language") == "zh-Hant,zh;q=0.9")
+                    """{"code":200,"results":{"recComics":{"list":[${comic("one")}]}}}""" else """{"code":200,"results":{"recComics":{"list":[]}}}""")
+            }
+            assertNull(client(server).home().notice)
+            assertEquals(1, server.requestCount)
+        }
+    }
+    @Test fun officialImageAliasPreservesEveryPathAndQueryAndDoesNotRewriteOtherSources() {
+        assertEquals("https://sm.mangafuna.xyz/m/book/page.webp?size=1500&token=a%2Bb", CopySource.imageUrl("https://sm.mangafunb.fun/m/book/page.webp?size=1500&token=a%2Bb"))
+        assertEquals("https://s3.mangafuna.xyz/cover.jpg.200x.jpg", CopySource.imageUrl("https://s3.mangafunb.fun/cover.jpg.200x.jpg"))
+        for (url in listOf("https://images.example/page.jpg", "https://sm.mangafunb.fun:8443/a", "https://sm.mangafunb.fun.evil.example/a", "http://sm.mangafunb.fun/a"))
+            assertEquals(url, CopySource.imageUrl(url))
+    }
     @Test fun searchApiIsPreferredAndPaginationKeepsTheFallbackSearchScope() {
         MockWebServer().use { api -> MockWebServer().use { web ->
             val attempts = AtomicInteger()

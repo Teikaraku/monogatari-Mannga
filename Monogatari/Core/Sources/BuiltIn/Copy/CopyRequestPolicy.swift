@@ -29,6 +29,7 @@ actor CopyMetadataCache {
 
 actor CopyContentRoute {
     private var preferred: URL?
+    init(preferred: URL? = nil) { self.preferred = preferred }
     func current(fallback base: URL) -> URL { preferred ?? base }
     func succeeded(_ base: URL) { preferred = base }
 }

@@ -35,6 +35,13 @@ object CopySource {
     val configuration = SourceConfig(ID, "拷贝漫画", TYPE, WEBSITE,
         JSONObject().put("apiBase", API).put("apiVersion", API_VERSION).put("contentApiBase", CONTENT_API).put("contentApiVersion", CONTENT_API_VERSION)
             .put("languages", JSONArray(listOf("zh"))).put("contentRating", 1).toString())
+
+    /** The site's direct CDN serves the same paths; its Cloudflare image alias is blocked on some routes. */
+    fun imageUrl(address: String): String {
+        val url = runCatching { address.toHttpUrl() }.getOrNull() ?: return address
+        if (url.scheme != "https" || url.port != 443 || !Regex("s[0-9a-z]\\.mangafunb\\.fun").matches(url.host)) return address
+        return url.newBuilder().host(url.host.removeSuffix(".mangafunb.fun") + ".mangafuna.xyz").build().toString()
+    }
 }
 
 data class CopyPage<T>(val entries: List<T>, val more: Boolean)
@@ -62,7 +69,9 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
     private val api = checkedAddress(apiAddress)
     private val contentApi = checkedAddress(contentAddress)
     private val contentBackups = (contentAlternates ?: if (contentApi.host == "www.manga2026.xyz") listOf(CopySource.CONTENT_BACKUP) else emptyList()).map(::checkedAddress)
-    @Volatile private var preferredContent = contentApi
+    @Volatile private var preferredContent = if (contentAlternates == null && contentApi.host == "www.manga2026.xyz")
+        checkedAddress(CopySource.CONTENT_BACKUP) else contentApi
+    private val imageHttp = http.newBuilder().callTimeout(90, java.util.concurrent.TimeUnit.SECONDS).build()
     private val http = http.newBuilder().connectTimeout(minOf(http.connectTimeoutMillis.toLong(), 8000), java.util.concurrent.TimeUnit.MILLISECONDS)
         .readTimeout(minOf(http.readTimeoutMillis.toLong(), 20_000), java.util.concurrent.TimeUnit.MILLISECONDS).callTimeout(25, java.util.concurrent.TimeUnit.SECONDS).build()
     private val http1 = this.http.newBuilder().connectionPool(ConnectionPool()).protocols(listOf(Protocol.HTTP_1_1)).build()
@@ -161,7 +170,7 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
 
     private fun requestResult(url: HttpUrl, label: String, content: Boolean, transport: OkHttpClient = if (preferHttp1) http1 else http, rateAttempt: Int = 0): JSONObject {
         val request = Request.Builder().url(url).header("User-Agent", "Monogatari/0.9")
-            .header("Accept", "application/json").header("Cache-Control", "no-cache")
+            .header("Accept", "application/json").header("Accept-Language", "zh-Hant,zh;q=0.9").header("Cache-Control", "no-cache")
             .header("version", if (content) contentVersion else version).header("platform", "3")
             .apply { if (content) { header("dnts", "3"); header("webp", "1"); header("Referer", website.toString()) } else header("region", "0") }.build()
         return transport.newCall(request).execute().use { response ->
@@ -438,11 +447,31 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
         json.optString("intro").ifBlank { json.optString("brief") })
 
     fun imageRequest(url: String): Request {
-        val target = checkedAddress(url)
+        val target = checkedAddress(CopySource.imageUrl(url))
         return Request.Builder().url(target).header("User-Agent", "Monogatari/0.9").header("Accept", "image/*")
             .header("Referer", website.toString()).build()
     }
-    private fun webUrl(address: String): String = address.takeIf { it.isNotBlank() }?.let { website.resolve(it)?.toString() ?: error("无效漫画资源地址") }.orEmpty()
+
+    fun imageBytes(address: String): ByteArray {
+        val request = imageRequest(address)
+        var attempt = 0
+        while (true) {
+            policy.before(request.url)
+            val transport = if (attempt == 0) imageHttp else imageHttp.newBuilder().connectionPool(ConnectionPool()).protocols(listOf(Protocol.HTTP_1_1)).build()
+            try {
+                return transport.newCall(request).execute().use { response ->
+                    if (response.code == 429) throw policy.limited(request.url, response.header("Retry-After"), response.header("Date"), attempt)
+                    if (!response.isSuccessful) throw HttpFailure(response.code, "拷贝漫画图片下载失败：HTTP ${response.code}")
+                    SourceHost.readBounded(response.body?.byteStream() ?: error("服务器没有返回图片"), 50 * 1024 * 1024)
+                }
+            } catch (error: IOException) {
+                val untrusted = generateSequence<Throwable>(error) { it.cause }.any { it is CertificateException || it is SSLPeerUnverifiedException }
+                if (attempt++ >= 2 || Thread.currentThread().isInterrupted || untrusted || error is HttpFailure ||
+                    error is CopyRateLimitFailure && error.retryAt - now() > CopyRequestPolicy.MAX_AUTOMATIC_WAIT) throw error
+            } finally { if (attempt > 0 && transport !== imageHttp) transport.connectionPool.evictAll() }
+        }
+    }
+    private fun webUrl(address: String): String = address.takeIf { it.isNotBlank() }?.let { CopySource.imageUrl(website.resolve(it)?.toString() ?: error("无效漫画资源地址")) }.orEmpty()
     private fun pathKey(key: String): String = key.also { require(it.isNotBlank() && it.length <= 256 && '/' !in it && '\\' !in it && it !in setOf(".", "..")) { "无效漫画标识" } }
     private fun items(value: Any?): List<JSONObject> {
         val array = when (value) { is JSONArray -> value; is JSONObject -> value.optJSONArray("list"); else -> null }

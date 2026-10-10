@@ -23,13 +23,14 @@ struct CopyLiveNetworkTests {
         #expect(chapters.filter { $0.volumeNumber != nil }.compactMap(\.title) == expected)
         let pages = try await client.pages(key: "modujingbingdenuli", chapter: "7b302219-c084-11f1-a40f-fa163e02432f")
         #expect(pages.count == 21)
-        for address in [pages.first!, pages.last!] {
-            let (data, response) = try await session.data(for: client.imageRequest(URL(string: address)!))
+        for (index, address) in pages.enumerated() {
+            let (data, response) = try await client.imageData(for: client.imageRequest(URL(string: address)!))
             #expect((response as? HTTPURLResponse)?.statusCode == 200)
             #expect(!data.isEmpty)
             let image = CGImageSourceCreateWithData(data as CFData, nil)
             #expect(image != nil && CGImageSourceGetCount(image!) > 0)
-            print("COPY_LIVE reader image: bytes=\(data.count), type=\(response.mimeType ?? "unknown")")
+            print("COPY_LIVE reader image: page=\(index + 1), bytes=\(data.count), type=\(response.mimeType ?? "unknown")")
+            if index != pages.count - 1 { try await Task.sleep(nanoseconds: 200_000_000) }
         }
     }
 }

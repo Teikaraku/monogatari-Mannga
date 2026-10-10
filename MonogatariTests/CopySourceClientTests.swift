@@ -105,6 +105,42 @@ private final class CopyAttemptCounter: @unchecked Sendable {
 struct CopySourceClientTests {
     private let comic = #"{"name":"Fixture comic","path_word":"fixture-comic","cover":"https://images.example/cover.jpg"}"#
 
+    @Test func imageTlsRecoveryDoesNotInvalidateTheSharedBookstoreSession() async throws {
+        let attempts = CopyAttemptCounter()
+        let fixture = CopyFixture { request, _ in
+            if request.url!.path == "/image.webp" {
+                return attempts.next() <= 2 ? .failure(URLError(.secureConnectionFailed)) : .response(200, "image-data", [:])
+            }
+            return .json("{\"code\":200,\"results\":{\"list\":[\(comic)],\"total\":1}}")
+        }
+        let client = fixture.client
+        let (data, _) = try await client.imageData(for: client.imageRequest(fixture.browse.appendingPathComponent("image.webp")))
+        #expect(String(decoding: data, as: UTF8.self) == "image-data")
+        #expect(try await client.catalog(CopyQuery(), page: 1).entries.count == 1)
+        #expect(fixture.requests.count == 4)
+    }
+
+    @Test func chineseDataLanguageDoesNotInheritTheDevicesEnglishRequestLanguage() async throws {
+        let fixture = CopyFixture { request, _ in
+            .json(request.value(forHTTPHeaderField: "Accept-Language") == "zh-Hant,zh;q=0.9" ?
+                "{\"code\":200,\"results\":{\"recComics\":{\"list\":[\(comic)]}}}" : #"{"code":200,"results":{"recComics":{"list":[]}}}"#)
+        }
+        let home = try await fixture.client.home()
+        #expect(home.sections.count == 1 && home.notice == nil)
+        #expect(fixture.requests.count == 1)
+    }
+
+    @Test func verifiedImageAliasPreservesPathQueryAndNormalTlsIdentity() {
+        let original = URL(string: "https://sm.mangafunb.fun/m/book/page.webp?size=1500&token=a%2Bb")!
+        let request = CopyClient().imageRequest(original)
+        #expect(request.url?.absoluteString == "https://sm.mangafuna.xyz/m/book/page.webp?size=1500&token=a%2Bb")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(request.value(forHTTPHeaderField: "version") == nil)
+        for address in ["https://images.example/a", "https://sm.mangafunb.fun:8443/a", "https://sm.mangafunb.fun.evil.example/a", "http://sm.mangafunb.fun/a"] {
+            #expect(CopyClient.imageUrl(URL(string: address)!).absoluteString == address)
+        }
+    }
+
     @Test func detailsAndChapterGroupsShareOneMetadataRequest() async throws {
         let fixture = CopyFixture { request, _ in
             request.url!.path.contains("/comic2/") ? .json("{\"code\":200,\"results\":{\"comic\":\(comic),\"groups\":{\"default\":{}}}}") :

@@ -184,7 +184,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             imageCache.costLimit = 100 * 1024 * 1024
             $0.dataCache = dataCache
             $0.imageCache = imageCache
-            $0.dataLoader = dataLoader
+            $0.dataLoader = CopyImageDataLoader(fallback: dataLoader)
             $0.dataCachePolicy = .storeOriginalData
             $0.isStoringPreviewsInMemoryCache = false
         }

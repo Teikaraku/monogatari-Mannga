@@ -80,15 +80,13 @@ class CopyNetworkInstrumentedTest {
             assertEquals(21, pages.size)
             progress("chapter 188 returned 21 pages")
             val images = JSONArray()
-            for (url in listOf(pages.first(), pages.last())) {
-                val bytes = http.newCall(client.imageRequest(url)).execute().use {
-                    assertEquals(200, it.code)
-                    SourceHost.readBounded(it.body!!.byteStream(), 20 * 1024 * 1024)
-                }
+            for ((index, url) in pages.withIndex()) {
+                val bytes = client.imageBytes(url)
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
                 assertTrue("The reader must receive a real image", bounds.outWidth > 0 && bounds.outHeight > 0)
-                images.put(JSONObject().put("bytes", bytes.size).put("width", bounds.outWidth).put("height", bounds.outHeight))
+                images.put(JSONObject().put("page", index + 1).put("bytes", bytes.size).put("width", bounds.outWidth).put("height", bounds.outHeight))
+                if (index != pages.lastIndex) Thread.sleep(200)
             }
             evidence.put("readPages", pages.size).put("images", images).put("passed", true)
         } catch (failure: Throwable) {

@@ -200,6 +200,7 @@ class SourceClient(private val secrets: SecretStore, private val context: Contex
     fun imageBytes(source: SourceConfig, url: String): ByteArray {
         if (url.startsWith("file:")) return File(android.net.Uri.parse(url).path ?: error("无效本地页面")).readBytes()
         if (source.type == "wasm") return runtimes.runtime(source.id).imageBytes(url)
+        if (source.type == CopySource.TYPE) return copy(source).imageBytes(url)
         fun load(): Pair<Int, ByteArray> {
             var address = url
             repeat(10) { http.newCall(imageRequest(source, address)).execute().use { response ->
