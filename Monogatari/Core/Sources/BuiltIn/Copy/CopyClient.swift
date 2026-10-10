@@ -170,6 +170,7 @@ struct CopyClient: Sendable {
             return try await requestWithRetry(url, label: label, content: content)
         } catch {
             try Task.checkCancellation()
+            if error is CancellationError { throw error }
             if (error as NSError).code == URLError.Code.cancelled.rawValue && (error as NSError).domain == NSURLErrorDomain {
                 throw CancellationError()
             }
@@ -269,6 +270,7 @@ struct CopyClient: Sendable {
             return try parseHome(json)
         } catch {
             try Task.checkCancellation()
+            if error is CancellationError { throw error }
             if (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == URLError.Code.cancelled.rawValue {
                 throw CancellationError()
             }
@@ -278,6 +280,7 @@ struct CopyClient: Sendable {
                     return try parseHome(json)
                 } catch {
                     try Task.checkCancellation()
+                    if error is CancellationError { throw error }
                     return try await recoverHome(error)
                 }
             }
