@@ -46,6 +46,20 @@ jobs:
           name: monogatari-ios
           path: ${{ env.IPA }}
           if-no-files-found: error
+      - name: 汇总编译错误
+        if: failure()
+        run: |
+          [ -f build/xcodebuild.log ] || exit 0
+          # Annotations stay readable without signing in; each one carries a block of log lines.
+          summarize() {
+            sed -e 's/%/%25/g' -e 's/\r//g' | awk 'BEGIN{ORS="%0A"} {print}'
+          }
+          resolve=$(awk '/Could not resolve package dependencies/{f=1} f{print; if (++n>40) exit}' build/xcodebuild.log | summarize)
+          [ -n "$resolve" ] && echo "::error title=Package resolution::$resolve"
+          errors=$(grep -E "error:|\*\* ARCHIVE FAILED|Command .* failed" build/xcodebuild.log | grep -v "Could not resolve" | sort -u | head -60 | summarize)
+          [ -n "$errors" ] && echo "::error title=Build errors::$errors"
+          tail -n 30 build/xcodebuild.log | summarize | sed 's/^/::notice title=Log tail::/'
+          echo
       - name: 上传编译日志
         if: failure()
         uses: actions/upload-artifact@v4
