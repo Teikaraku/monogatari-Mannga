@@ -725,7 +725,7 @@
 		};
 		FBFDF5F62DF799180064F603 /* XCRemoteSwiftPackageReference "AidokuRunner" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Monogatari/AidokuRunner";
+			repositoryURL = "https://github.com/Aidoku/AidokuRunner";
 			requirement = {
 				branch = main;
 				kind = branch;
