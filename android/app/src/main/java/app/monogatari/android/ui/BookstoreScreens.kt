@@ -8,6 +8,7 @@ import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -483,8 +484,16 @@ private fun fullSizeImage(url: String): String = url.replace(Regex("""(\.(?:jpe?
     if (more) TextButton(next, Modifier.fillMaxWidth().padding(vertical = 12.dp), enabled = !busy) { Text(pt("Load more", "加载更多")) }
 }
 @Composable private fun CopyError(message: String, retry: () -> Unit) {
+    var expanded by remember(message) { mutableStateOf(false) }
     Surface(Modifier.fillMaxWidth().padding(16.dp), color = MaterialTheme.colorScheme.errorContainer.copy(alpha = .45f), shape = RoundedCornerShape(12.dp)) {
-        Column(Modifier.padding(14.dp)) { Text(message, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 13.sp); TextButton(retry) { Text(pt("Retry", "重试")) } }
+        Column(Modifier.padding(14.dp)) {
+            Text(message.substringBefore('\n'), color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 13.sp)
+            if ('\n' in message) {
+                TextButton({ expanded = !expanded }) { Text(pt(if (expanded) "Hide details" else "Loading details", if (expanded) "收起详情" else "查看加载详情")) }
+                if (expanded) SelectionContainer { Text(message.substringAfter('\n'), fontSize = 12.sp, color = MaterialTheme.colorScheme.onErrorContainer) }
+            }
+            TextButton(retry) { Text(pt("Retry", "重试")) }
+        }
     }
 }
 @Composable private fun MissingCopySource(vm: MonogatariViewModel) {

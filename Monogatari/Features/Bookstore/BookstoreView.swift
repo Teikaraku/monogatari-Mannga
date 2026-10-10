@@ -523,7 +523,15 @@ struct CopyErrorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(message).font(.system(size: 13)).foregroundColor(.red)
+            Text(message.components(separatedBy: "\n").first ?? message)
+                .font(.system(size: 13)).foregroundColor(.red)
+            if let separator = message.firstIndex(of: "\n") {
+                DisclosureGroup("查看加载详情") {
+                    Text(String(message[message.index(after: separator)...]))
+                        .font(.system(size: 12)).textSelection(.enabled)
+                }
+                .font(.system(size: 13))
+            }
             Button("重试", action: retry).foregroundColor(bookstorePink)
         }
         .padding(14)
