@@ -19,9 +19,7 @@
 | 备份 | 保存或恢复书架、阅读记录和设置。 |
 | 其他功能 | 词典、文字识别、收藏词汇、图片清晰度增强，以及原有阅读服务的连接功能。 |
 
-两端都已删除 iCloud 同步、来源列表管理、Discord 和 Ko-Fi 入口，以及“关于”页面中的编译编号；安卓端另外删除了手动迁移章节历史。图源文件导入和已有数据的备份兼容仍然保留。
-
-在线内容取决于提供方当前返回的数据。不能读取的付费或锁定章节需要提供方相应的权限，应用不会把空白页面当作读取成功。
+在线内容取决于提供方当前返回的数据。不能读取的付费或锁定章节需要提供方相应的权限。
 
 ## 想修改页面，从哪里开始
 
@@ -36,7 +34,6 @@
 | 设置和关于页面 | `android/.../ui/SettingsScreens.kt`、`OriginalSettingsScreen.kt` | `Monogatari/Features/Settings/` |
 | 拷贝漫画的数据地址和读取方式 | `android/.../sources/CopySourceClient.kt` | `Monogatari/Core/Sources/BuiltIn/Copy/` |
 | 应用名称和项目链接 | `android/.../AppBrand.kt` | `Monogatari/Monogatari.xcconfig`、`Monogatari/App/Resources/Localization/` |
-| 图标原稿 | `docs/assets/monogatari-icon.png` | 同一张图生成的 `Monogatari/App/Resources/` 图标 |
 
 表中的 `android/...` 指 `android/app/src/main/java/app/monogatari/android`。具体的修改方法见 [页面修改指南](docs/EDITING.md)。
 
