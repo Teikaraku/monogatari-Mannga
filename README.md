@@ -6,15 +6,6 @@
 
 这个仓库保存安卓版和 iPhone / iPad 版的完整源码。两端的书库页面、书架和设置按同一套设计编写；安卓版用 Kotlin 和 Jetpack Compose，iPhone 版用 Swift、SwiftUI 和 UIKit，修改一端不会自动改变另一端。
 
-## 下载安装
-
-进入 [下载页面](https://github.com/Teikaraku/monogatari-reader/releases)，展开版本下方的附件：
-
-- 安卓：下载 `monogatari-android-0.9.apk`。要求 Android 8.0 或更新版本，使用物语自己的正式签名，包名为 `app.monogatari.android`。
-- iPhone / iPad：下载 `monogatari-ios-0.9-unsigned.ipa`，用 AltStore、SideStore 等侧载工具以自己的 Apple ID 签名后安装。
-
-包名更换后，新版不能覆盖以前的开发版安装包。需要保留书架时，先在旧版里创建备份，安装新版后再恢复。
-
 ## 目前可以做什么
 
 | 功能 | 使用方式 |
