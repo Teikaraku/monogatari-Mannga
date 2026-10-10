@@ -99,6 +99,7 @@ struct BookstoreView: View {
                             if let details = home.diagnostics {
                                 DisclosureGroup("查看加载详情") {
                                     Text(details).font(.system(size: 12)).textSelection(.enabled)
+                                    Button("复制诊断信息") { UIPasteboard.general.string = details }
                                 }
                                 .font(.system(size: 13))
                             }

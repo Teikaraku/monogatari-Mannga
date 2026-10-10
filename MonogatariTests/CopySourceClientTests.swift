@@ -1,9 +1,10 @@
 import Foundation
+import AidokuRunner
 import Testing
 @testable import Monogatari
 
 private final class CopyFixtureProtocol: URLProtocol, @unchecked Sendable {
-    enum Reply { case json(String), failure(URLError), status(Int) }
+    enum Reply { case json(String), failure(URLError), status(Int), response(Int, String, [String: String]) }
     private static let lock = NSLock()
     private static var handlers: [String: (URLRequest) -> Reply] = [:]
 
@@ -32,13 +33,15 @@ private final class CopyFixtureProtocol: URLProtocol, @unchecked Sendable {
         if case .failure(let error) = reply { client?.urlProtocol(self, didFailWithError: error); return }
         let status: Int
         let text: String
+        var headers = ["Content-Type": "application/json"]
         switch reply {
             case .json(let json): status = 200; text = json
             case .status(let code): status = code; text = "{}"
+            case .response(let code, let body, let extra): status = code; text = body; headers.merge(extra) { _, new in new }
             case .failure: return
         }
         let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
-            headerFields: ["Content-Type": "application/json"])!
+            headerFields: headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data(text.utf8))
         client?.urlProtocolDidFinishLoading(self)
@@ -80,7 +83,7 @@ private final class CopyFixture: @unchecked Sendable {
         return recorded
     }
 
-    var client: CopyClient { .init(session: session, browseBase: browse, contentBase: content) }
+    var client: CopyClient { .init(session: session, browseBase: browse, contentBase: content, searchBases: [browse, content]) }
 
     deinit {
         session.invalidateAndCancel()
@@ -101,6 +104,154 @@ private final class CopyAttemptCounter: @unchecked Sendable {
 
 struct CopySourceClientTests {
     private let comic = #"{"name":"Fixture comic","path_word":"fixture-comic","cover":"https://images.example/cover.jpg"}"#
+
+    @Test func readingConnectionFailuresUseTheVerifiedContentRouteAndKeepItForNextChapter() async throws {
+        let body = #"{"code":200,"results":{"chapter":{"contents":[{"url":"https://images.example/page.webp"}]}}}"#
+        let fixture = CopyFixture { _, backup in backup ? .json(body) : .failure(URLError(.secureConnectionFailed)) }
+        let client = CopyClient(session: fixture.session, browseBase: fixture.content, contentBase: fixture.browse,
+            contentAlternates: [fixture.content])
+        for chapter in ["188", "187", "188"] {
+            #expect(try await client.pages(key: "manga", chapter: chapter) == ["https://images.example/page.webp"])
+        }
+        #expect(fixture.requests.filter { $0.url?.host == fixture.browse.host }.count == 2)
+        #expect(fixture.requests.filter { $0.url?.host == fixture.content.host }.count == 2)
+        let request = try #require(fixture.requests.last)
+        #expect(request.value(forHTTPHeaderField: "version") == "2024.4.28")
+        #expect(request.value(forHTTPHeaderField: "dnts") == "3")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "platform" && $0.value == "3" } == true)
+    }
+
+    private func fixtureBody(_ name: String) throws -> String {
+        let bundle = Bundle(for: CopyFixtureProtocol.self)
+        let address = try #require(bundle.url(forResource: name, withExtension: "json") ??
+            bundle.url(forResource: name, withExtension: "json", subdirectory: "Fixtures"))
+        return try String(contentsOf: address, encoding: .utf8)
+    }
+
+    @Test func actualHomePayloadsRetainBannersRecommendationsAndTheCorrectRankPeriod() throws {
+        for name in ["primary", "alternate"] {
+            let value = try JSONSerialization.jsonObject(with: Data(fixtureBody("copy-home-\(name)").utf8)) as! [String: Any]
+            let home = try CopyClient().parseHome(value["results"] as! [String: Any])
+            #expect(home.features.count == 5)
+            #expect(home.sections.contains { $0.id == "recComics" })
+            #expect(!home.topics.isEmpty && !home.rankings.isEmpty && home.notice == nil)
+            if name == "primary" { #expect(home.sections.count == 5) }
+            else {
+                #expect(home.sections.first { $0.id == "hotComics" }?.title == "本周更新")
+                #expect(home.rankings.first?.period == "week")
+            }
+        }
+    }
+
+    @Test func persistentlyEmptyPrimaryUsesTheAlternateHomepageAndCompletesMissingShelves() async throws {
+        let alternate = try fixtureBody("copy-home-alternate")
+        let feed = "{\"code\":200,\"results\":{\"list\":[\(comic)],\"total\":1}}"
+        let fixture = CopyFixture { request, backup in
+            if backup { return .json(alternate) }
+            return .json(request.url!.path.hasSuffix("homeIndex") ? #"{"code":200,"results":{"recComics":{"list":[]},"banners":[]}}"# : feed)
+        }
+        let home = try await fixture.client.home()
+        #expect(home.features.count == 5)
+        #expect(home.sections.contains { $0.id == "newComics" } && home.sections.contains { $0.id == "finishComics" })
+        #expect(Set(home.rankings.map(\.period)) == Set(["day", "week", "month"]))
+        #expect(home.notice == "已使用备用首页接口。")
+        #expect(home.diagnostics?.contains("条目0") == true)
+        #expect(fixture.requests.filter { $0.url?.host == fixture.content.host }.count == 1)
+        #expect(fixture.requests.count == 10)
+    }
+
+    @Test func realToLoveVolumesKeepTheirSeriesAndNumericReaderOrder() async throws {
+        let bundle = Bundle(for: CopyFixtureProtocol.self)
+        let address = try #require(bundle.url(forResource: "copy-tolove-chapters", withExtension: "json") ??
+            bundle.url(forResource: "copy-tolove-chapters", withExtension: "json", subdirectory: "Fixtures"))
+        let body = try String(contentsOf: address, encoding: .utf8)
+        let fixture = CopyFixture { request, _ in
+            request.url!.path.contains("/comic2/") ? .json(#"{"code":200,"results":{"groups":{"default":{"name":"默認"}}}}"#) : .json(body)
+        }
+        let chapters = try await fixture.client.chapters(key: "chubaowangnv")
+        let expected = (1...18).reversed().map { String(format: "D%02d卷", $0) } +
+            (1...18).reversed().map { String(format: "第%02d卷", $0) }
+        #expect(chapters.filter { $0.volumeNumber != nil }.compactMap(\.title) == expected)
+        #expect(ChapterSortOption.sourceOrder.sorted(chapters, ascending: true).first?.title == "第01卷")
+        #expect(ChapterSortOption.chapter.sorted(chapters, ascending: true).filter { $0.volumeNumber != nil }.compactMap(\.title) == Array(expected.reversed()))
+        #expect(ChapterSortOption.chapter.sorted(chapters, ascending: false).filter { $0.volumeNumber != nil }.compactMap(\.title) == expected)
+        #expect(ChapterSortOption.uploadDate.sorted(chapters, ascending: false).map(\.key) == chapters.map(\.key))
+    }
+
+    @Test func searchTimeoutUsesTheVerifiedAlternateWithoutLosingQueryOrPage() async throws {
+        let body = "{\"code\":200,\"results\":{\"list\":[\(comic)],\"total\":32,\"offset\":30,\"limit\":30}}"
+        let fixture = CopyFixture { _, backup in backup ? .json(body) : .failure(URLError(.timedOut)) }
+        let page = try await fixture.client.catalog(CopyQuery(kind: "search", keyword: " 金牌得主 & 漫画 "), page: 2)
+        #expect(page.entries.count == 1 && page.more)
+        #expect(fixture.requests.count == 3)
+        let request = try #require(fixture.requests.last)
+        #expect(request.url?.host == fixture.content.host)
+        #expect(request.url?.path == "/api/kb/web/searchcl/comics")
+        let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!
+        #expect(query.first { $0.name == "q" }?.value == "金牌得主 & 漫画")
+        #expect(query.first { $0.name == "offset" }?.value == "30")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+    }
+
+    @Test func reading429WaitsForRetryAfterAndTheRecoveredPagesAreCached() async throws {
+        let counter = CopyAttemptCounter()
+        let body = #"{"code":200,"results":{"chapter":{"contents":[{"url":"https://images.example/page.webp"}]}}}"#
+        let fixture = CopyFixture { _, _ in counter.next() == 1 ? .response(429, "{}", ["Retry-After": "1"]) : .json(body) }
+        let client = fixture.client
+        let started = Date()
+        let pages = try await client.pages(key: "modujingbingdenuli", chapter: "188")
+        #expect(Date().timeIntervalSince(started) >= 0.9)
+        #expect(pages == ["https://images.example/page.webp"])
+        #expect(try await client.pages(key: "modujingbingdenuli", chapter: "188") == pages)
+        #expect(fixture.requests.count == 2)
+    }
+
+    @Test func longRetryAfterStopsOtherChaptersAndDoesNotChangeService() async throws {
+        let fixture = CopyFixture { _, _ in .response(429, "{}", ["Retry-After": "90"]) }
+        let client = fixture.client
+        for chapter in ["188", "187"] {
+            do { _ = try await client.pages(key: "modujingbingdenuli", chapter: chapter); Issue.record("Rate limit was ignored") }
+            catch CopyError.rateLimited(let until) { #expect(until.timeIntervalSinceNow > 85) }
+        }
+        #expect(fixture.requests.count == 1)
+    }
+
+    @Test func unlabelledJsonRateLimitsUseBoundedBackoff() async throws {
+        let fixture = CopyFixture { _, _ in .json(#"{"code":429,"results":null}"#) }
+        do { _ = try await fixture.client.pages(key: "manga", chapter: "188"); Issue.record("JSON rate limit became a success") }
+        catch CopyError.rateLimited { #expect(fixture.requests.count == 3) }
+    }
+
+    @Test func retryAfterHttpDateUsesTheServerClockAndZeroCannotBusyLoop() {
+        #expect(CopyRequestPolicy.retryDelay("Sat, 10 Oct 2026 11:01:30 GMT", serverDate: "Sat, 10 Oct 2026 11:00:00 GMT", now: .distantPast) == 90)
+        #expect(CopyRequestPolicy.retryDelay("0") == 1)
+        #expect(CopyRequestPolicy.retryDelay("bad-date") == nil)
+    }
+
+    @Test func concurrentReadersAndDownloadsShareOnePageListRequest() async throws {
+        let fixture = CopyFixture { _, _ in .json(#"{"code":200,"results":{"chapter":{"contents":[{"url":"https://images.example/page.webp"}]}}}"#) }
+        let client = fixture.client
+        let pages = try await withThrowingTaskGroup(of: [String].self) { group in
+            for _ in 0..<4 { group.addTask { try await client.pages(key: "manga", chapter: "188") } }
+            var results: [[String]] = []
+            for try await result in group { results.append(result) }
+            return results
+        }
+        #expect(pages.count == 4 && pages.allSatisfy { $0 == ["https://images.example/page.webp"] })
+        #expect(fixture.requests.count == 1)
+    }
+
+    @Test func permissionFailuresAreNotRetriedOrCachedAsPages() async throws {
+        let counter = CopyAttemptCounter()
+        let fixture = CopyFixture { _, _ in counter.next() == 1 ? .status(403) :
+            .json(#"{"code":200,"results":{"chapter":{"contents":[{"url":"https://images.example/page.webp"}]}}}"#) }
+        let client = fixture.client
+        do { _ = try await client.pages(key: "manga", chapter: "188"); Issue.record("403 was ignored") }
+        catch CopyError.http(let status, _) { #expect(status == 403 && fixture.requests.count == 1) }
+        #expect(try await client.pages(key: "manga", chapter: "188") == ["https://images.example/page.webp"])
+        #expect(fixture.requests.count == 2)
+    }
 
     @Test func validHomeUsesOneRequestAndBypassesCachedEmptyResponses() async throws {
         let body = "{\"code\":200,\"results\":{\"recComics\":{\"list\":[\(comic)]}}}"
@@ -159,7 +310,7 @@ struct CopySourceClientTests {
         #expect(home.rankings.map(\.period) == ["day", "week", "month"])
         #expect(home.diagnostics?.contains("空对象") == true)
         #expect(home.notice != nil)
-        #expect(fixture.requests.count == 9)
+        #expect(fixture.requests.count == 10)
     }
 
     @Test func failureOfAllFeedsCannotBecomeBlankSuccess() async {

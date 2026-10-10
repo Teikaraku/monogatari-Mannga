@@ -9,6 +9,8 @@ import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.RecordedRequest
 import org.json.JSONArray
 import org.json.JSONObject
+import app.monogatari.android.data.Chapter
+import app.monogatari.android.reader.ChapterListing
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -20,6 +22,178 @@ import java.util.concurrent.atomic.AtomicInteger
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class CopySourceClientTest {
+    @Test fun readingConnectionFailureUsesVerifiedContentServiceAndKeepsTheHealthyRoute() {
+        MockWebServer().use { primary -> MockWebServer().use { backup ->
+            val attempts = AtomicInteger()
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                if (chain.request().url.port == primary.port) { attempts.incrementAndGet(); throw SSLHandshakeException("fixture route failure") }
+                chain.proceed(chain.request())
+            }.build()
+            repeat(2) { backup.enqueue(response("""{"code":200,"results":{"chapter":{"contents":[{"url":"https://images.example/page.webp"}]}}}""")) }
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, primary.url("/").toString())
+            val client = CopySourceClient(source, http, primary.url("/").toString(), contentAddress = primary.url("/").toString(),
+                contentAlternates = listOf(backup.url("/").toString()))
+            for (id in listOf("188", "187", "188")) assertEquals(listOf("https://images.example/page.webp"), client.pages(Chapter(id, id, metadata = """{"copyMangaKey":"manga"}""")))
+            assertEquals(2, attempts.get())
+            assertEquals(2, backup.requestCount)
+            val request = backup.takeRequest()
+            assertEquals("/api/v3/comic/manga/chapter/188", request.requestUrl!!.encodedPath)
+            assertEquals("3", request.requestUrl!!.queryParameter("platform"))
+            assertEquals("2024.4.28", request.getHeader("version"))
+            assertEquals("3", request.getHeader("dnts"))
+            assertNull(request.getHeader("Authorization"))
+        } }
+    }
+
+    @Test fun capturedPrimaryAndAlternateHomePayloadsRetainBannersAndRecommendations() {
+        MockWebServer().use { server ->
+            val client = client(server)
+            for (name in listOf("primary", "alternate")) {
+                val fixture = javaClass.getResourceAsStream("/copy-home-$name.json")!!.bufferedReader().use { it.readText() }
+                val home = client.parseHome(JSONObject(fixture).getJSONObject("results"))
+                assertEquals(5, home.features.size)
+                assertTrue(home.sections.any { it.id == "recComics" })
+                assertTrue(home.topics.isNotEmpty())
+                assertTrue(home.rankings.isNotEmpty())
+                assertNull(home.notice)
+                if (name == "primary") assertEquals(5, home.sections.size)
+                else assertEquals("本周更新", home.sections.first { it.id == "hotComics" }.title)
+            }
+        }
+    }
+
+    @Test fun persistentlyEmptyPrimaryUsesARealAlternateHomepageAndCompletesItsMissingShelves() {
+        MockWebServer().use { primary -> MockWebServer().use { content ->
+            val fixture = javaClass.getResourceAsStream("/copy-home-alternate.json")!!.bufferedReader().use { it.readText() }
+            primary.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest) = response(if (request.requestUrl!!.encodedPath.endsWith("homeIndex"))
+                    """{"code":200,"results":{"recComics":{"list":[]},"banners":[]}}"""
+                    else """{"code":200,"results":{"list":[${comic("feed")}],"total":1}}""")
+            }
+            content.enqueue(response(fixture))
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, primary.url("/").toString())
+            val home = CopySourceClient(source, OkHttpClient(), primary.url("/").toString(), contentAddress = content.url("/").toString()).home()
+            assertEquals(5, home.features.size)
+            assertTrue(home.sections.any { it.id == "newComics" } && home.sections.any { it.id == "finishComics" })
+            assertEquals(setOf("day", "week", "month"), home.rankings.map { it.period }.toSet())
+            assertTrue(home.diagnostics!!.contains("条目0"))
+            assertEquals("已使用备用首页接口。", home.notice)
+            assertEquals(1, content.requestCount)
+            assertEquals(9, primary.requestCount)
+        } }
+    }
+    @Test fun realToLoveVolumesKeepProviderSeriesOrderAndReaderSequence() {
+        MockWebServer().use { server ->
+            val fixture = javaClass.getResourceAsStream("/copy-tolove-chapters.json")!!.bufferedReader().use { it.readText() }
+            server.enqueue(response("""{"code":200,"results":{"comic":${comic("chubaowangnv")},"groups":{"default":{"name":"默認"}}}}"""))
+            server.enqueue(response(fixture))
+            val manga = client(server).details(Manga("chubaowangnv", "copy-fixture", "出包王女"))
+            val actual = manga.chapters.filter { it.volume != null }.map { it.title }
+            val expected = (18 downTo 1).map { "D%02d卷".format(it) } + (18 downTo 1).map { "第%02d卷".format(it) }
+            assertEquals(expected, actual)
+            assertEquals("第01卷", ChapterListing.next(manga)?.title)
+            val byNumber = manga.copy(metadata = """{"chapterFlags":3}""")
+            val numbered = ChapterListing.sorted(byNumber).filter { it.volume != null }.map { it.title }
+            assertEquals(expected.asReversed(), numbered)
+            assertEquals(expected, ChapterListing.sorted(byNumber.copy(metadata = """{"chapterFlags":2}""")).filter { it.volume != null }.map { it.title })
+            val byDate = manga.copy(metadata = """{"chapterFlags":4}""")
+            assertEquals(manga.chapters.map { it.key }, ChapterListing.sorted(byDate).map { it.key })
+        }
+    }
+
+    @Test fun searchNetworkFailureTriesVerifiedAlternateWithTheSameKeywordAndPage() {
+        MockWebServer().use { primary -> MockWebServer().use { backup ->
+            backup.enqueue(response("""{"code":200,"results":{"list":[${comic("one")}],"total":32,"offset":30,"limit":30}}"""))
+            val calls = AtomicInteger()
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                if (chain.request().url.port == primary.port) { calls.incrementAndGet(); throw java.net.SocketTimeoutException("fixture connection timeout") }
+                chain.proceed(chain.request())
+            }.build()
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, primary.url("/").toString())
+            val client = CopySourceClient(source, http, primary.url("/").toString(), contentAddress = primary.url("/").toString(),
+                searchAddresses = listOf(primary.url("/").toString(), backup.url("/").toString()))
+            val page = client.catalog(CopyQuery(kind = "search", keyword = " 金牌得主 & 漫画 "), 2)
+            assertTrue(page.more)
+            assertEquals(2, calls.get())
+            val request = backup.takeRequest()
+            assertEquals("/api/kb/web/searchcl/comics", request.requestUrl!!.encodedPath)
+            assertEquals("金牌得主 & 漫画", request.requestUrl!!.queryParameter("q"))
+            assertEquals("30", request.requestUrl!!.queryParameter("offset"))
+            assertNull(request.getHeader("Authorization"))
+        } }
+    }
+
+    @Test fun reading429WaitsThenRecoversAndRepeatedRequestsUseTheShortCache() {
+        MockWebServer().use { server ->
+            var clock = 100_000L
+            val waits = mutableListOf<Long>()
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, server.url("/").toString())
+            val client = CopySourceClient(source, OkHttpClient(), server.url("/").toString(), contentAddress = server.url("/").toString(),
+                now = { clock }, pause = { waits += it; clock += it })
+            server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "2").setBody("{}"))
+            server.enqueue(response("""{"code":200,"results":{"chapter":{"contents":[{"url":"https://images.example/page.webp"}]}}}"""))
+            val chapter = Chapter("188", "第188话", metadata = """{"copyMangaKey":"modujingbingdenuli"}""")
+            assertEquals(listOf("https://images.example/page.webp"), client.pages(chapter))
+            assertEquals(client.pages(chapter), client.pages(chapter))
+            assertEquals(listOf(2000L), waits)
+            assertEquals(2, server.requestCount)
+        }
+    }
+
+    @Test fun longRetryAfterStopsRequestsAcrossChaptersAndDoesNotChangeIpOrService() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "90").setBody("{}"))
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, server.url("/").toString())
+            val client = CopySourceClient(source, OkHttpClient(), server.url("/").toString(), contentAddress = server.url("/").toString(),
+                now = { 100_000 }, pause = { error("A long cooldown must not block the reader") })
+            for (key in listOf("188", "187")) {
+                val error = runCatching { client.pages(Chapter(key, key, metadata = """{"copyMangaKey":"manga"}""")) }.exceptionOrNull()
+                assertTrue(error is CopyRateLimitFailure)
+                assertTrue(error!!.message!!.contains("90 秒"))
+            }
+            assertEquals(1, server.requestCount)
+        }
+    }
+
+    @Test fun unlabelledRateLimitsHaveBoundedBackoffAndJson429IsNotAnEmptySuccess() {
+        MockWebServer().use { server ->
+            var clock = 100_000L
+            val waits = mutableListOf<Long>()
+            repeat(3) { server.enqueue(response("""{"code":429,"results":null}""")) }
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, server.url("/").toString())
+            val client = CopySourceClient(source, OkHttpClient(), server.url("/").toString(), contentAddress = server.url("/").toString(),
+                now = { clock }, pause = { waits += it; clock += it })
+            assertTrue(runCatching { client.pages(Chapter("188", "188", metadata = """{"copyMangaKey":"manga"}""")) }.exceptionOrNull() is CopyRateLimitFailure)
+            assertEquals(listOf(2000L, 4000L), waits)
+            assertEquals(3, server.requestCount)
+        }
+    }
+
+    @Test fun retryAfterHttpDateUsesTheServersClockAndNeverBusyLoopsOnZero() {
+        assertEquals(90_000L, CopyRequestPolicy.retryDelay("Sat, 10 Oct 2026 11:01:30 GMT", "Sat, 10 Oct 2026 11:00:00 GMT", 0))
+        assertEquals(1000L, CopyRequestPolicy.retryDelay("0", null, 0))
+        assertNull(CopyRequestPolicy.retryDelay("not-a-date", null, 0))
+    }
+
+    @Test fun pageCacheExpiresAndConcurrentReadersShareOneSuccessfulRequest() {
+        MockWebServer().use { server ->
+            var clock = 100_000L
+            repeat(2) { server.enqueue(response("""{"code":200,"results":{"chapter":{"contents":[{"url":"https://images.example/page.webp"}]}}}""")) }
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, server.url("/").toString())
+            val client = CopySourceClient(source, OkHttpClient(), server.url("/").toString(), contentAddress = server.url("/").toString(), now = { clock })
+            val chapter = Chapter("188", "188", metadata = """{"copyMangaKey":"manga"}""")
+            val pool = java.util.concurrent.Executors.newFixedThreadPool(4)
+            try {
+                val results = pool.invokeAll((1..4).map { java.util.concurrent.Callable { client.pages(chapter) } }).map { it.get() }
+                assertTrue(results.all { it == results.first() })
+                assertEquals(1, server.requestCount)
+                clock += 300_001
+                client.pages(chapter)
+                assertEquals(2, server.requestCount)
+            } finally { pool.shutdownNow() }
+        }
+    }
+
     private fun client(server: MockWebServer): CopySourceClient = CopySourceClient(
         SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, server.url("/").toString()),
         OkHttpClient.Builder().followRedirects(false).build(), server.url("/").toString(), contentAddress = server.url("/").toString())
@@ -93,6 +267,10 @@ class CopySourceClientTest {
             assertEquals("one", home.sections.single().entries.single().key)
             assertNull(home.notice)
             assertEquals(2, server.requestCount)
+            server.takeRequest()
+            val retry = server.takeRequest().requestUrl!!
+            assertEquals("true", retry.queryParameter("_update"))
+            assertNotNull(retry.queryParameter("_"))
         }
     }
     @Test fun transientTlsFailureRetriesWithFreshConnectionsBeforeChangingService() {

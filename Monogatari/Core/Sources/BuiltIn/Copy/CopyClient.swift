@@ -89,12 +89,15 @@ enum CopyError: LocalizedError {
     case message(String)
     case http(Int, String)
     case emptyHome(String)
+    case rateLimited(Date)
 
     var errorDescription: String? {
         switch self {
             case .message(let message): message
             case .http(_, let message): message
             case .emptyHome(let message): message
+            case .rateLimited(let until):
+                "拷贝漫画请求过于频繁（HTTP 429），请在约 \(String(format: "%.0f", ceil(max(1, until.timeIntervalSinceNow)))) 秒后重试。代理的共享出口也可能被限流。"
         }
     }
 }
@@ -103,9 +106,11 @@ struct CopyClient: Sendable {
     static let sourceKey = "copy2026"
     static let name = "拷贝漫画"
     static let website = URL(string: "https://www.2026copy.com")!
+    static let mainlandWebsite = URL(string: "https://www.copy4000.com")!
     static let api = URL(string: "https://api.copy2000.online")!
     static let apiVersion = "3.0.9"
     static let contentApi = URL(string: "https://www.manga2026.xyz")!
+    static let contentBackup = URL(string: "https://mapi.hotmangasg.com")!
     static let contentVersion = "2024.4.28"
     // Bookstore requests are user initiated, including on cellular or Low Data Mode.
     static let networkSession: URLSession = {
@@ -119,11 +124,20 @@ struct CopyClient: Sendable {
     private let session: URLSession
     private let browseBase: URL
     private let contentBase: URL
+    private let contentAlternates: [URL]
+    private let contentRoute = CopyContentRoute()
+    private let searchBases: [URL]
+    private static let sharedPolicy = CopyRequestPolicy()
+    private let policy = Self.sharedPolicy
+    private let readCache = CopyReadCache()
 
-    init(session: URLSession = Self.networkSession, browseBase: URL = Self.api, contentBase: URL = Self.contentApi) {
+    init(session: URLSession = Self.networkSession, browseBase: URL = Self.api, contentBase: URL = Self.contentApi,
+         searchBases: [URL] = [Self.mainlandWebsite, Self.website], contentAlternates: [URL]? = nil) {
         self.session = session
         self.browseBase = browseBase
         self.contentBase = contentBase
+        self.searchBases = searchBases
+        self.contentAlternates = contentAlternates ?? (contentBase.host == Self.contentApi.host ? [Self.contentBackup] : [])
     }
 
     static let genres: [(id: String, name: String)] = [
@@ -165,7 +179,18 @@ struct CopyClient: Sendable {
         return url
     }
 
-    private func result(_ url: URL, label: String, content: Bool = false, fallback: Bool = true) async throws -> [String: Any] {
+    private func result(_ original: URL, label: String, content: Bool = false, fallback: Bool = true) async throws -> [String: Any] {
+        func rebased(_ url: URL, to base: URL) -> URL {
+            var target = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+            let source = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+            target.percentEncodedPath = source.percentEncodedPath
+            target.percentEncodedQuery = source.percentEncodedQuery
+            return target.url!
+        }
+        let url: URL
+        if content, original.host == contentBase.host, original.port == contentBase.port {
+            url = rebased(original, to: await contentRoute.current(fallback: contentBase))
+        } else { url = original }
         do {
             return try await requestWithRetry(url, label: label, content: content)
         } catch {
@@ -177,6 +202,24 @@ struct CopyClient: Sendable {
             let networkFailure = (error as NSError).domain == NSURLErrorDomain
             let serverFailure: Bool
             if case CopyError.http(let status, _) = error { serverFailure = status >= 500 } else { serverFailure = false }
+            if content, fallback, networkFailure || serverFailure {
+                var failures = [connectionFailure(url, label: label, error: error)]
+                for base in ([contentBase] + contentAlternates).filter({ $0.host != url.host || $0.port != url.port }) {
+                    let alternate = rebased(url, to: base)
+                    do {
+                        let data = try await requestWithRetry(alternate, label: label, content: true)
+                        await contentRoute.succeeded(base)
+                        return data
+                    } catch {
+                        try Task.checkCancellation()
+                        if error is CancellationError { throw error }
+                        if (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == URLError.Code.cancelled.rawValue { throw CancellationError() }
+                        if case CopyError.rateLimited = error { throw error }
+                        failures.append(connectionFailure(alternate, label: label, error: error))
+                    }
+                }
+                throw CopyError.message(failures.joined(separator: "\n备用 HTTPS 接口："))
+            }
             guard fallback, !content, browseBase != contentBase, url.host == browseBase.host, url.port == browseBase.port,
                 url.path.hasPrefix("/api/v3/"), networkFailure || serverFailure else {
                 if networkFailure { throw CopyError.message(connectionFailure(url, label: label, error: error)) }
@@ -190,7 +233,7 @@ struct CopyClient: Sendable {
                 alternate.queryItems = (alternate.queryItems ?? []) + [URLQueryItem(name: "platform", value: "3")]
             }
             do {
-                return try await requestWithRetry(alternate.url!, label: label, content: true)
+                return try await result(alternate.url!, label: label, content: true)
             } catch let secondary {
                 try Task.checkCancellation()
                 throw CopyError.message(connectionFailure(url, label: label, error: error) + "\n备用 HTTPS 接口：" +
@@ -200,8 +243,20 @@ struct CopyClient: Sendable {
     }
 
     private func requestWithRetry(_ url: URL, label: String, content: Bool) async throws -> [String: Any] {
+        var attempt = 0
+        while true {
+            try await policy.before(url)
+            do { return try await requestTransiently(url, label: label, content: content, rateAttempt: attempt) }
+            catch CopyError.rateLimited(let until) {
+                guard attempt < 2, until.timeIntervalSinceNow <= CopyRequestPolicy.maximumAutomaticWait else { throw CopyError.rateLimited(until) }
+                attempt += 1
+            }
+        }
+    }
+
+    private func requestTransiently(_ url: URL, label: String, content: Bool, rateAttempt: Int) async throws -> [String: Any] {
         do {
-            return try await requestResult(url, label: label, content: content)
+            return try await requestResult(url, label: label, content: content, rateAttempt: rateAttempt)
         } catch {
             try Task.checkCancellation()
             let failure = error as NSError
@@ -211,7 +266,7 @@ struct CopyClient: Sendable {
             try await Task.sleep(nanoseconds: 150_000_000)
             let fresh = URLSession(configuration: session.configuration)
             defer { fresh.invalidateAndCancel() }
-            return try await requestResult(url, label: label, content: content, transport: fresh)
+            return try await requestResult(url, label: label, content: content, transport: fresh, rateAttempt: rateAttempt)
         }
     }
 
@@ -230,8 +285,8 @@ struct CopyClient: Sendable {
         return "拷贝漫画\(label)（\(url.host ?? "未知地址")）：\(reason)"
     }
 
-    private func requestResult(_ url: URL, label: String, content: Bool, transport: URLSession? = nil) async throws -> [String: Any] {
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
+    private func requestResult(_ url: URL, label: String, content: Bool, transport: URLSession? = nil, rateAttempt: Int = 0) async throws -> [String: Any] {
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
@@ -249,6 +304,11 @@ struct CopyClient: Sendable {
         let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         let message = (json?["message"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 429 || json?["code"] as? Int == 429 {
+            let response = response as? HTTPURLResponse
+            throw await policy.limited(url, retryAfter: response?.value(forHTTPHeaderField: "Retry-After"),
+                serverDate: response?.value(forHTTPHeaderField: "Date"), attempt: rateAttempt)
+        }
         guard (200..<300).contains(status) else {
             throw CopyError.http(status, "\(Self.name)\(label)失败：\(message ?? "HTTP \(status)")")
         }
@@ -274,18 +334,52 @@ struct CopyClient: Sendable {
             if (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == URLError.Code.cancelled.rawValue {
                 throw CancellationError()
             }
+            if case CopyError.rateLimited = error { throw error }
             if case CopyError.emptyHome = error {
                 do {
-                    let json = try await result(url(browseBase, "api/v3/h5/homeIndex"), label: "首页", fallback: false)
+                    let json = try await result(url(browseBase, "api/v3/h5/homeIndex", [("_update", "true"), ("_", String(Int64(Date().timeIntervalSince1970 * 1000)))]), label: "首页", fallback: false)
                     return try parseHome(json)
                 } catch {
                     try Task.checkCancellation()
                     if error is CancellationError { throw error }
-                    return try await recoverHome(error)
+                    if (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == URLError.Code.cancelled.rawValue { throw CancellationError() }
+                    if case CopyError.rateLimited = error { throw error }
+                    return try await alternateHome(error)
                 }
             }
-            return try await recoverHome(error)
+            return try await alternateHome(error)
         }
+    }
+
+    private func alternateHome(_ primary: Error) async throws -> CopyHome {
+        if browseBase != contentBase {
+            do {
+                let json = try await result(url(contentBase, "api/v3/h5/homeIndex", content: true), label: "备用首页", content: true)
+                var home = try parseHome(json)
+                if !home.sections.contains(where: { $0.id == "newComics" }) || !home.sections.contains(where: { $0.id == "finishComics" }) {
+                    do {
+                        let feeds = try await recoverHome(primary)
+                        let sectionIDs = Set(home.sections.map(\.id)), periods = Set(home.rankings.map(\.period))
+                        home.sections += feeds.sections.filter { !sectionIDs.contains($0.id) }
+                        home.rankings += feeds.rankings.filter { !periods.contains($0.period) }
+                    } catch {
+                        try Task.checkCancellation()
+                        if error is CancellationError { throw error }
+                        if case CopyError.rateLimited = error { throw error }
+                    }
+                }
+                home.notice = "已使用备用首页接口。"
+                home.diagnostics = "首页接口：\(primary.localizedDescription)\n备用首页：\(contentBase.host ?? "")"
+                return home
+            } catch {
+                try Task.checkCancellation()
+                if error is CancellationError { throw error }
+                if (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == URLError.Code.cancelled.rawValue { throw CancellationError() }
+                if case CopyError.rateLimited = error { throw error }
+                return try await recoverHome(CopyError.message("\(primary.localizedDescription)\n备用首页（\(contentBase.host ?? "")）：\(error.localizedDescription)"))
+            }
+        }
+        return try await recoverHome(primary)
     }
 
     func parseHome(_ json: [String: Any]) throws -> CopyHome {
@@ -298,6 +392,10 @@ struct CopyClient: Sendable {
             let entries = unique(items(json[key]).compactMap(comic))
             return entries.isEmpty ? nil : CopySection(id: key, title: title, entries: entries)
         }
+        if !home.sections.contains(where: { $0.id == "hotComics" }) {
+            let updates = unique((items(json["updateWeeklyFreeComics"]) + items(json["updateWeeklyChargeComics"])).compactMap(comic))
+            if !updates.isEmpty { home.sections.append(CopySection(id: "hotComics", title: "本周更新", entries: updates)) }
+        }
         home.features = items(json["banners"]).compactMap { banner in
             guard (banner["type"] as? Int) == 1, let raw = banner["comic"] as? [String: Any], let entry = comic(raw) else { return nil }
             let brief = (banner["brief"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? entry.manga.title
@@ -307,14 +405,36 @@ struct CopyClient: Sendable {
         home.topics = (topics.isEmpty ? items(json["topics"]) : topics).map(topic)
         let periods = [("day", "日榜", "rankDayComics"), ("week", "周榜", "rankWeekComics"), ("month", "月榜", "rankMonthComics")]
         home.rankings = periods.compactMap { period, title, key in
-            let entries = unique(items(json[key]).compactMap(comic))
+            let raw = items(json[key])
+            let values = raw.isEmpty && period == "week" ? items(json["rankWeeklyFreeComics"]) : raw
+            let entries = unique(values.compactMap(comic))
             return entries.isEmpty ? nil : CopyRanking(period: period, title: title, entries: entries)
         }
         guard !home.sections.isEmpty || !home.features.isEmpty || !home.rankings.isEmpty else {
-            let schema = json.keys.sorted().prefix(16).joined(separator: "；")
+            let schema = Self.homeSchema(json)
             throw CopyError.emptyHome("首页返回成功，但没有可显示的漫画。返回结构：\(schema.isEmpty ? "空对象 {}" : schema)")
         }
         return home
+    }
+
+    static func homeSchema(_ json: [String: Any]) -> String {
+        let client = CopyClient()
+        return json.keys.sorted().prefix(16).map { key in
+            let value = json[key]
+            let entries = client.items(value)
+            let shape: String
+            if let object = value as? [String: Any] { shape = "对象(\(object.keys.sorted().joined(separator: ",")))" }
+            else if value is [Any] { shape = "数组" }
+            else if value is String { shape = "字符串" }
+            else if value is NSNull { shape = "null" }
+            else { shape = String(describing: type(of: value as Any)) }
+            let sample = entries.first
+            let comic = sample?["comic"] as? [String: Any] ?? sample
+            let valid = entries.compactMap(client.comic).count
+            return "\(key)=\(shape)，条目\(entries.count)，有效漫画\(valid)" + (comic.map {
+                "，漫画字段(\($0.keys.sorted().joined(separator: ",")))，path_word=\(String(describing: type(of: $0["path_word"] as Any)))"
+            } ?? "")
+        }.joined(separator: "；")
     }
 
     private struct RecoveredFeed: Sendable {
@@ -376,9 +496,7 @@ struct CopyClient: Sendable {
             case "search":
                 let keyword = query.keyword.trimmingCharacters(in: .whitespacesAndNewlines)
                 if keyword.isEmpty { return CopyPage(entries: [], more: false) }
-                json = try await result(url(Self.website, "api/kb/web/searchcl/comics", [
-                    ("q", keyword), ("q_type", ""), ("platform", "2"), ("limit", String(limit)), ("offset", offset)
-                ]), label: "搜索")
+                json = try await search(keyword, limit: limit, offset: offset)
             case "ranking":
                 json = try await result(url(browseBase, "api/v3/ranks", [
                     ("limit", String(limit)), ("offset", offset), ("type", "1"),
@@ -397,6 +515,29 @@ struct CopyClient: Sendable {
         }
         let entries = unique(items(json).compactMap(comic))
         return CopyPage(entries: entries, more: hasMore(json, count: entries.count, page: page, limit: limit))
+    }
+
+    private func search(_ keyword: String, limit: Int, offset: String) async throws -> [String: Any] {
+        var failures: [String] = []
+        for (index, base) in searchBases.enumerated() {
+            let address = try url(base, "api/kb/web/searchcl/comics", [
+                ("q", keyword), ("q_type", ""), ("platform", "2"), ("limit", String(limit)), ("offset", offset)
+            ])
+            do { return try await requestWithRetry(address, label: "搜索", content: false) }
+            catch {
+                try Task.checkCancellation()
+                if error is CancellationError { throw error }
+                let failure = error as NSError
+                if failure.domain == NSURLErrorDomain && failure.code == URLError.cancelled.rawValue { throw CancellationError() }
+                let eligible: Bool
+                if case CopyError.http(let code, _) = error { eligible = code == 404 || code == 408 || code >= 500 }
+                else { eligible = failure.domain == NSURLErrorDomain }
+                guard eligible else { throw error }
+                failures.append(connectionFailure(address, label: "搜索", error: error))
+                if index == searchBases.count - 1 { throw CopyError.message(failures.joined(separator: "\n")) }
+            }
+        }
+        throw CopyError.message("没有可用的搜索地址")
     }
 
     func topics(page: Int) async throws -> CopyPage<CopyTopic> {
@@ -433,9 +574,10 @@ struct CopyClient: Sendable {
             groups.sort { $0.1 == "default" && $1.1 != "default" }
         }
         if groups.isEmpty { groups = [("", "default")] }
-        var chapters: [(chapter: AidokuRunner.Chapter, date: Double, number: Double)] = []
+        var chapters: [(chapter: AidokuRunner.Chapter, date: Double, group: Int, index: Double)] = []
         var seenKeys = Set<String>()
-        for (groupName, groupKey) in groups {
+        for (groupIndex, group) in groups.enumerated() {
+            let (groupName, groupKey) = group
             var offset = 0
             var seen = Set<String>()
             while true {
@@ -470,7 +612,7 @@ struct CopyClient: Sendable {
                         language: "zh",
                         locked: locked
                     )
-                    chapters.append((chapter, date, number ?? 0))
+                    chapters.append((chapter, date, groupIndex, (row["index"] as? Double) ?? Double(chapters.count)))
                 }
                 offset += raw.count
                 let total = data["total"] as? Int ?? offset
@@ -479,19 +621,21 @@ struct CopyClient: Sendable {
         }
         return chapters.sorted { lhs, rhs in
             if lhs.date != rhs.date { return lhs.date > rhs.date }
-            if lhs.number != rhs.number { return lhs.number > rhs.number }
-            return lhs.chapter.key < rhs.chapter.key
+            if lhs.group != rhs.group { return lhs.group < rhs.group }
+            return lhs.index > rhs.index
         }.map { $0.chapter }
     }
 
     func pages(key: String, chapter: String) async throws -> [String] {
         let comicKey = try pathKey(key)
         let chapterKey = try pathKey(chapter)
-        let data = try await result(url(contentBase, "api/v3/comic/\(comicKey)/chapter/\(chapterKey)", content: true),
-            label: "阅读图片", content: true)
-        if (data["is_lock"] as? Bool) == true { throw CopyError.message("该章节需要拷贝账号的阅读权限") }
-        guard let content = data["chapter"] as? [String: Any] else { throw CopyError.message("\(Self.name)未返回章节图片") }
-        return try Self.orderedPages(content).map { webUrl($0) }
+        let address = try url(contentBase, "api/v3/comic/\(comicKey)/chapter/\(chapterKey)", content: true)
+        return try await readCache.pages(address) {
+            let data = try await self.result(address, label: "阅读图片", content: true)
+            if (data["is_lock"] as? Bool) == true { throw CopyError.message("该章节需要拷贝账号的阅读权限") }
+            guard let content = data["chapter"] as? [String: Any] else { throw CopyError.message("\(Self.name)未返回章节图片") }
+            return try Self.orderedPages(content).map { self.webUrl($0) }
+        }
     }
 
     // MARK: Parsing

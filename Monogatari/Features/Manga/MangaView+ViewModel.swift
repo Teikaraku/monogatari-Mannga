@@ -772,22 +772,7 @@ extension MangaView.ViewModel {
         guard let chapters = manga.chapters, !chapters.isEmpty else {
             return []
         }
-        return switch chapterSortOption {
-            case .sourceOrder:
-                chapterSortAscending ? chapters.reversed() : chapters
-            case .chapter:
-                if chapterSortAscending {
-                    chapters.sorted(by: { $0.chapterNumber ?? -1 < $1.chapterNumber ?? -1 })
-                } else {
-                    chapters.sorted(by: { $0.chapterNumber ?? -1 > $1.chapterNumber ?? -1 })
-                }
-            case .uploadDate:
-                if chapterSortAscending {
-                    chapters.sorted(by: { $0.dateUploaded ?? .distantPast < $1.dateUploaded ?? .distantPast })
-                } else {
-                    chapters.sorted(by: { $0.dateUploaded ?? .distantPast > $1.dateUploaded ?? .distantPast })
-                }
-        }
+        return chapterSortOption.sorted(chapters, ascending: chapterSortAscending)
     }
 
     private func filteredChapters() -> [AidokuRunner.Chapter] {

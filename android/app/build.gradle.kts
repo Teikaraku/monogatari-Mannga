@@ -11,7 +11,8 @@ android {
     namespace = "app.monogatari.android"
     compileSdk = 36
     defaultConfig {
-        applicationId = "app.monogatari.android"
+        // A separate installation for live-device checks keeps the user's reader and data untouched.
+        applicationId = providers.gradleProperty("verificationApplicationId").getOrElse("app.monogatari.android")
         minSdk = 26
         targetSdk = 35
         versionCode = 3

@@ -28,14 +28,18 @@ class SourceClient(private val secrets: SecretStore, private val context: Contex
         override fun remove(key: String) = secrets.remove(key)
     }
     fun kavita(timeoutSeconds: Long? = null) = KavitaClient(secrets, requestHttp(timeoutSeconds), credentials)
-    fun copy(source: SourceConfig): CopySourceClient {
+    private val copyClients = LinkedHashMap<List<String>, CopySourceClient>(16, .75f, true)
+    @Synchronized fun copy(source: SourceConfig): CopySourceClient {
         val preferences = context?.let { SourcePreferences(it, source.id) }
         val configuration = JSONObject(source.configuration)
-        return CopySourceClient(source, http,
+        val settings = listOf(
             preferences?.get("apiServer")?.toString() ?: configuration.optString("apiBase", CopySource.API),
             preferences?.get("apiVersion")?.toString() ?: configuration.optString("apiVersion", CopySource.API_VERSION),
             preferences?.get("contentApiServer")?.toString() ?: configuration.optString("contentApiBase", CopySource.CONTENT_API),
             preferences?.get("contentApiVersion")?.toString() ?: configuration.optString("contentApiVersion", CopySource.CONTENT_API_VERSION))
+        val key = listOf(source.id, source.baseUrl, source.configuration) + settings
+        return copyClients.getOrPut(key) { CopySourceClient(source, http, settings[0], settings[1], settings[2], settings[3]) }
+            .also { while (copyClients.size > 16) copyClients.remove(copyClients.keys.first()) }
     }
     fun suwayomi(source: SourceConfig, preferences: SourcePreferences? = null) = app.monogatari.android.sources.SuwayomiClient(http, credentials, preferences ?: context?.let { SourcePreferences(it, source.id) })
     var builtInSessionFactory: ((SourceConfig) -> app.monogatari.android.sources.SourceSession)? = null

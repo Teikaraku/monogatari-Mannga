@@ -31,7 +31,7 @@ jobs:
             -skipPackagePluginValidation -skipMacroValidation \
             CODE_SIGN_IDENTITY= CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee build/xcodebuild.log | if command -v xcbeautify > /dev/null; then xcbeautify --renderer github-actions; else cat; fi
-      - name: 检查首页解析和安全连接处理
+      - name: 检查首页、搜索备用地址、卷数排序和阅读限流处理
         run: |
           set -o pipefail
           DEVICE=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin); rows=[x["udid"] for runtime,devices in sorted(d["devices"].items(),reverse=True) if ".iOS-" in runtime for x in devices if x["name"].startswith("iPhone") and x.get("isAvailable")]; print(rows[0])')
@@ -41,6 +41,26 @@ jobs:
             -skipPackagePluginValidation -skipMacroValidation \
             CODE_SIGN_IDENTITY= CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
             2>&1 | tee build/copy-source-tests.log | if command -v xcbeautify > /dev/null; then xcbeautify --renderer github-actions; else cat; fi
+      - name: 实测苹果原生网络、首页及阅读图片
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          DEVICE=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for r,ds in sorted(d["devices"].items(),reverse=True) if ".iOS-" in r for x in ds if x["name"].startswith("iPhone") and x.get("isAvailable")))')
+          TEST_RUNNER_COPY_LIVE_SERVICE=1 xcodebuild -project Monogatari.xcodeproj -scheme Monogatari -configuration Debug \
+            -destination "platform=iOS Simulator,id=$DEVICE" test \
+            -only-testing:MonogatariTests/CopyLiveNetworkTests -parallel-testing-enabled NO \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGN_IDENTITY= CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee build/copy-live-network.log
+      - name: 保存原生网络实测记录
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: copy-network-verification
+          path: |
+            build/copy-source-tests.log
+            build/copy-live-network.log
+          if-no-files-found: ignore
       - name: 打包 IPA
         run: |
           APP=build/Monogatari.xcarchive/Products/Applications/Monogatari.app

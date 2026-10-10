@@ -25,11 +25,25 @@ object ChapterListing {
         .filter { it.downloaded && manga.chapters.none { c ->c.key==it.key } }.distinctBy { it.key }
     fun flags(manga:Manga)=metadata(manga).optInt("chapterFlags")
     fun ascending(manga:Manga)=flags(manga) and 1 != 0
+    private fun volumeSeries(chapter: Chapter): String {
+        val title = chapter.title
+        val match = Regex("""(?:第\s*)?(?:[0-9]+(?:\.[0-9]+)?|[〇零一二两兩三四五六七八九十百千万萬]+)\s*[卷巻册冊]""").find(title) ?: return ""
+        return title.substring(0, match.range.first).trim().lowercase(java.util.Locale.ROOT)
+    }
+    private val numberOrder = Comparator<Chapter> { a, b ->
+        val an = number(a); val bn = number(b)
+        var result = (an ?: -1.0).compareTo(bn ?: -1.0)
+        if (result == 0 && an == null && bn == null && a.volume != null && b.volume != null)
+            result = volumeSeries(a).compareTo(volumeSeries(b))
+        if (result == 0) result = (a.volume ?: -1.0).compareTo(b.volume ?: -1.0)
+        if (result == 0) result = b.sourceOrder.compareTo(a.sourceOrder)
+        result
+    }
     fun sorted(manga:Manga):List<Chapter> {
         val flags=flags(manga);val ascending=flags and 1 != 0
         return when((flags and 14) shr 1) {
-            1 -> manga.chapters.sortedWith(compareBy<Chapter> { number(it) ?: -1.0 }.thenBy { it.volume ?: -1.0 }.thenBy { it.sourceOrder }).let { if(ascending)it else it.asReversed() }
-            2 -> manga.chapters.sortedBy { it.dateUploaded }.let { if(ascending)it else it.asReversed() }
+            1 -> manga.chapters.sortedWith(numberOrder).let { if(ascending)it else it.asReversed() }
+            2 -> manga.chapters.sortedWith(compareBy<Chapter> { it.dateUploaded }.thenByDescending { it.sourceOrder }).let { if(ascending)it else it.asReversed() }
             else -> manga.chapters.sortedBy { it.sourceOrder }.let { if(ascending)it.asReversed() else it }
         }
     }

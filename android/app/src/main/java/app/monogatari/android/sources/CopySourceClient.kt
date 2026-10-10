@@ -6,6 +6,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.ConnectionPool
+import okhttp3.Protocol
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
@@ -24,9 +25,11 @@ object CopySource {
     const val ID = "copy2026"
     const val TYPE = "copy"
     const val WEBSITE = "https://www.2026copy.com"
+    const val MAINLAND_WEBSITE = "https://www.copy4000.com"
     const val API = "https://api.copy2000.online"
     const val API_VERSION = "3.0.9"
     const val CONTENT_API = "https://www.manga2026.xyz"
+    const val CONTENT_BACKUP = "https://mapi.hotmangasg.com"
     const val CONTENT_API_VERSION = "2024.4.28"
     const val INSTALL_MARKER = "Android.Sources.copy2026.initialized"
     val configuration = SourceConfig(ID, "拷贝漫画", TYPE, WEBSITE,
@@ -46,14 +49,30 @@ data class CopyQuery(val kind: String = "catalog", val keyword: String = "", val
     val rankPeriod: String = "day", val audience: String = "male", val topic: String = "")
 
 /** JSON data transport only. The app supplies every view and never loads website HTML here. */
-class CopySourceClient(val source: SourceConfig, private val http: OkHttpClient,
+class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
     apiAddress: String = JSONObject(source.configuration).optString("apiBase", CopySource.API),
     private val version: String = JSONObject(source.configuration).optString("apiVersion", CopySource.API_VERSION),
     contentAddress: String = JSONObject(source.configuration).optString("contentApiBase", CopySource.CONTENT_API),
-    private val contentVersion: String = JSONObject(source.configuration).optString("contentApiVersion", CopySource.CONTENT_API_VERSION)) {
+    private val contentVersion: String = JSONObject(source.configuration).optString("contentApiVersion", CopySource.CONTENT_API_VERSION),
+    searchAddresses: List<String>? = null,
+    contentAlternates: List<String>? = null,
+    private val now: () -> Long = System::currentTimeMillis,
+    private val pause: (Long) -> Unit = Thread::sleep) {
     private val api = checkedAddress(apiAddress)
     private val contentApi = checkedAddress(contentAddress)
+    private val contentBackups = (contentAlternates ?: if (contentApi.host == "www.manga2026.xyz") listOf(CopySource.CONTENT_BACKUP) else emptyList()).map(::checkedAddress)
+    @Volatile private var preferredContent = contentApi
+    private val http = http.newBuilder().connectTimeout(minOf(http.connectTimeoutMillis.toLong(), 8000), java.util.concurrent.TimeUnit.MILLISECONDS)
+        .readTimeout(minOf(http.readTimeoutMillis.toLong(), 20_000), java.util.concurrent.TimeUnit.MILLISECONDS).callTimeout(25, java.util.concurrent.TimeUnit.SECONDS).build()
+    private val http1 = this.http.newBuilder().connectionPool(ConnectionPool()).protocols(listOf(Protocol.HTTP_1_1)).build()
+    @Volatile private var preferHttp1 = false
     private val website = checkedAddress(source.baseUrl.ifBlank { CopySource.WEBSITE })
+    private val searchBases = (searchAddresses ?: if (website.host in setOf("www.2026copy.com", "www.copy4000.com"))
+        listOf(CopySource.MAINLAND_WEBSITE, CopySource.WEBSITE) else listOf(website.toString())).map(::checkedAddress).distinct()
+    private val policy = CopyRequestPolicy(now, pause)
+    private data class CachedPages(val until: Long, val pages: List<String>)
+    private val pageCache = LinkedHashMap<String, CachedPages>(32, .75f, true)
+    private var lastPageRequest = 0L
 
     private fun checkedAddress(address: String): HttpUrl = address.trim().trimEnd('/').toHttpUrl().also {
         require(it.scheme == "https" || it.scheme == "http") { "图源接口地址必须使用 HTTP 或 HTTPS" }
@@ -68,16 +87,31 @@ class CopySourceClient(val source: SourceConfig, private val http: OkHttpClient,
     private class HttpFailure(val status: Int, message: String) : IOException(message)
     private class EmptyHomeFailure(message: String) : IllegalStateException(message)
 
-    private fun result(url: HttpUrl, label: String, content: Boolean = false, fallback: Boolean = true): JSONObject {
+    private fun result(original: HttpUrl, label: String, content: Boolean = false, fallback: Boolean = true): JSONObject {
+        val url = if (content && original.host == contentApi.host && original.port == contentApi.port)
+            preferredContent.newBuilder().encodedPath(original.encodedPath).encodedQuery(original.encodedQuery).build() else original
         try { return requestWithRetry(url, label, content) }
         catch (failure: IOException) {
+            if (failure is CopyRateLimitFailure) throw failure
             if (Thread.currentThread().isInterrupted) throw failure
+            if (content && fallback && (failure !is HttpFailure || failure.status >= 500)) {
+                val failures = mutableListOf(connectionFailure(url, label, failure))
+                for (base in (listOf(contentApi) + contentBackups).distinct().filter { it.host != url.host || it.port != url.port }) {
+                    val alternate = base.newBuilder().encodedPath(url.encodedPath).encodedQuery(url.encodedQuery).build()
+                    try { return requestWithRetry(alternate, label, true).also { preferredContent = base } }
+                    catch (secondary: Exception) {
+                        if (Thread.currentThread().isInterrupted || secondary is CopyRateLimitFailure) throw secondary
+                        failures += connectionFailure(alternate, label, secondary)
+                    }
+                }
+                throw IOException(failures.joinToString("\n备用 HTTPS 接口："), failure)
+            }
             val canRetry = fallback && !content && api != contentApi && url.host == api.host && url.port == api.port &&
                 url.encodedPath.startsWith("/api/v3/") && (failure !is HttpFailure || failure.status >= 500)
             if (!canRetry) throw IOException(connectionFailure(url, label, failure), failure)
             val alternate = contentApi.newBuilder().encodedPath(url.encodedPath).encodedQuery(url.encodedQuery)
                 .apply { if (url.queryParameter("platform") == null) addQueryParameter("platform", "3") }.build()
-            try { return requestWithRetry(alternate, label, true) }
+            try { return result(alternate, label, true) }
             catch (secondary: Exception) {
                 throw IOException(connectionFailure(url, label, failure) + "\n备用 HTTPS 接口：" +
                     connectionFailure(alternate, label, secondary), secondary)
@@ -86,14 +120,27 @@ class CopySourceClient(val source: SourceConfig, private val http: OkHttpClient,
     }
 
     private fun requestWithRetry(url: HttpUrl, label: String, content: Boolean): JSONObject {
-        try { return requestResult(url, label, content) }
+        var attempt = 0
+        while (true) {
+            policy.before(url)
+            try { return requestTransiently(url, label, content, attempt) }
+            catch (failure: CopyRateLimitFailure) {
+                if (attempt++ >= 2 || failure.retryAt - now() > CopyRequestPolicy.MAX_AUTOMATIC_WAIT) throw failure
+            }
+        }
+    }
+
+    private fun requestTransiently(url: HttpUrl, label: String, content: Boolean, rateAttempt: Int): JSONObject {
+        try { return requestResult(url, label, content, rateAttempt = rateAttempt) }
         catch (failure: IOException) {
             val certificateFailure = generateSequence<Throwable>(failure) { it.cause }
                 .any { it is CertificateException || it is SSLPeerUnverifiedException }
-            if (failure is HttpFailure || certificateFailure || Thread.currentThread().isInterrupted) throw failure
+            if (failure is HttpFailure || failure is CopyRateLimitFailure || certificateFailure || Thread.currentThread().isInterrupted) throw failure
             // Switching Wi-Fi/cellular can leave a stale pooled connection. Retry once with a fresh pool.
-            val fresh = http.newBuilder().connectionPool(ConnectionPool()).build()
-            try { return requestResult(url, label, content, fresh) }
+            // Some mobile routes stall an HTTP/2 stream. The one fresh retry still verifies HTTPS,
+            // and also supports servers/routes that only carry HTTP/1.1 reliably.
+            val fresh = http.newBuilder().connectionPool(ConnectionPool()).protocols(listOf(Protocol.HTTP_1_1)).build()
+            try { return requestResult(url, label, content, fresh, rateAttempt).also { preferHttp1 = true } }
             finally { fresh.connectionPool.evictAll() }
         }
     }
@@ -106,7 +153,7 @@ class CopySourceClient(val source: SourceConfig, private val http: OkHttpClient,
         return "拷贝漫画${label}（${url.host}）：$reason"
     }
 
-    private fun requestResult(url: HttpUrl, label: String, content: Boolean, transport: OkHttpClient = http): JSONObject {
+    private fun requestResult(url: HttpUrl, label: String, content: Boolean, transport: OkHttpClient = if (preferHttp1) http1 else http, rateAttempt: Int = 0): JSONObject {
         val request = Request.Builder().url(url).header("User-Agent", "Monogatari/0.9")
             .header("Accept", "application/json").header("Cache-Control", "no-cache")
             .header("version", if (content) contentVersion else version).header("platform", "3")
@@ -115,6 +162,8 @@ class CopySourceClient(val source: SourceConfig, private val http: OkHttpClient,
             val bytes = response.body?.byteStream()?.use { SourceHost.readBounded(it, 20 * 1024 * 1024) } ?: byteArrayOf()
             val json = runCatching { JSONObject(bytes.toString(Charsets.UTF_8)) }.getOrNull()
             val message = json?.stringOrNull("message")?.takeIf { it.isNotBlank() }
+            if (response.code == 429 || json?.optInt("code") == 429)
+                throw policy.limited(url, response.header("Retry-After"), response.header("Date"), rateAttempt)
             if (!response.isSuccessful) throw HttpFailure(response.code, "拷贝漫画${label}失败：${message ?: "HTTP ${response.code}"}")
             requireNotNull(json) { "拷贝漫画${label}接口未返回 JSON 数据" }
             require(json.optInt("code", 200) == 200) { "拷贝漫画${label}：${message ?: "接口访问受限"}" }
@@ -126,15 +175,37 @@ class CopySourceClient(val source: SourceConfig, private val http: OkHttpClient,
         try { return parseHome(result(apiUrl("api/v3/h5/homeIndex"), "首页", fallback = false)) }
         catch (error: Exception) {
             if (Thread.currentThread().isInterrupted) throw error
+            if (error is CopyRateLimitFailure) throw error
             if (error is EmptyHomeFailure) {
-                try { return parseHome(result(apiUrl("api/v3/h5/homeIndex"), "首页", fallback = false)) }
+                try { return parseHome(result(apiUrl("api/v3/h5/homeIndex", mapOf("_update" to "true", "_" to "${now()}")), "首页", fallback = false)) }
                 catch (retry: Exception) {
                     if (Thread.currentThread().isInterrupted) throw retry
-                    return recoverHome(retry)
+                    if (retry is CopyRateLimitFailure) throw retry
+                    return alternateHome(retry)
                 }
             }
-            return recoverHome(error)
+            return alternateHome(error)
         }
+    }
+
+    private fun alternateHome(primary: Exception): CopyHome {
+        if (api != contentApi) {
+            try {
+                var home = parseHome(result(contentUrl("api/v3/h5/homeIndex"), "备用首页", content = true))
+                if (home.sections.none { it.id == "newComics" } || home.sections.none { it.id == "finishComics" }) {
+                    try {
+                        val feeds = recoverHome(primary)
+                        home = home.copy(sections = home.sections + feeds.sections.filter { feed -> home.sections.none { it.id == feed.id } },
+                            rankings = home.rankings + feeds.rankings.filter { feed -> home.rankings.none { it.period == feed.period } })
+                    } catch (error: Exception) { if (Thread.currentThread().isInterrupted || error is CopyRateLimitFailure) throw error }
+                }
+                return home.copy(notice = "已使用备用首页接口。", diagnostics = "首页接口：${primary.message}\n备用首页：${contentApi.host}")
+            } catch (alternate: Exception) {
+                if (Thread.currentThread().isInterrupted || alternate is CopyRateLimitFailure) throw alternate
+                return recoverHome(IOException("${primary.message}\n备用首页（${contentApi.host}）：${alternate.message}", alternate))
+            }
+        }
+        return recoverHome(primary)
     }
 
     internal fun parseHome(json: JSONObject): CopyHome {
@@ -143,6 +214,10 @@ class CopySourceClient(val source: SourceConfig, private val http: OkHttpClient,
         val sections = definitions.mapNotNull { (key, title) ->
             val entries = items(json.opt(key)).map(::manga).distinctBy { it.id }
             if (entries.isEmpty()) null else CopySection(key, title, entries)
+        }.toMutableList()
+        if (sections.none { it.id == "hotComics" }) {
+            val updates = (items(json.opt("updateWeeklyFreeComics")) + items(json.opt("updateWeeklyChargeComics"))).map(::manga).distinctBy { it.id }
+            if (updates.isNotEmpty()) sections += CopySection("hotComics", "本周更新", updates)
         }
         val features = items(json.opt("banners")).filter { it.optInt("type") == 1 && it.optJSONObject("comic") != null }.map { banner ->
             val comic = manga(banner.getJSONObject("comic"))
@@ -151,14 +226,23 @@ class CopySourceClient(val source: SourceConfig, private val http: OkHttpClient,
         val topics = items(json.opt("topicsList")).ifEmpty { items(json.opt("topics")) }.map(::topic)
         val rankings = listOf("day" to "日榜", "week" to "周榜", "month" to "月榜").mapNotNull { (period, title) ->
             val key = "rank${period.replaceFirstChar(Char::uppercaseChar)}Comics"
-            items(json.opt(key)).map(::manga).distinctBy { it.id }.takeIf { it.isNotEmpty() }?.let { CopyRanking(period, title, it) }
+            val values = items(json.opt(key)).ifEmpty { if (period == "week") items(json.opt("rankWeeklyFreeComics")) else emptyList() }
+            values.map(::manga).distinctBy { it.id }.takeIf { it.isNotEmpty() }?.let { CopyRanking(period, title, it) }
         }
         if (sections.isEmpty() && features.isEmpty() && rankings.isEmpty())
             throw EmptyHomeFailure("首页返回成功，但没有可显示的漫画。返回结构：${homeSchema(json)}")
         return CopyHome(features, sections, topics, rankings)
     }
 
-    private fun homeSchema(json: JSONObject): String = json.keys().asSequence().sorted().take(16).joinToString("；").ifEmpty { "空对象 {}" }
+    private fun homeSchema(json: JSONObject): String = json.keys().asSequence().sorted().take(16).joinToString("；") { key ->
+        val value = json.opt(key)
+        val entries = items(value)
+        val sample = entries.firstOrNull()
+        val comic = sample?.optJSONObject("comic") ?: sample
+        val shape = when (value) { is JSONObject -> "对象(${value.keys().asSequence().sorted().joinToString(",")})"; is JSONArray -> "数组"; is String -> "字符串"; JSONObject.NULL -> "null"; else -> "${value?.javaClass?.simpleName}" }
+        val valid = entries.count { runCatching { manga(it) }.isSuccess }
+        "$key=$shape，条目${entries.size}，有效漫画$valid" + (comic?.let { "，漫画字段(${it.keys().asSequence().sorted().joinToString(",")})，path_word=${it.opt("path_word")?.javaClass?.simpleName}" } ?: "")
+    }.ifEmpty { "空对象 {}" }
 
     /** The aggregated homepage can fail independently of the catalog. Never cache that as an empty success. */
     private fun recoverHome(primary: Exception): CopyHome {
@@ -199,10 +283,7 @@ class CopySourceClient(val source: SourceConfig, private val http: OkHttpClient,
         val json = when (query.kind) {
             "search" -> {
                 if (query.keyword.isBlank()) return CopyPage(emptyList(), false)
-                val url = website.newBuilder().addPathSegments("api/kb/web/searchcl/comics")
-                    .addQueryParameter("q", query.keyword.trim()).addQueryParameter("q_type", "").addQueryParameter("platform", "2")
-                    .addQueryParameter("limit", limit.toString()).addQueryParameter("offset", ((page - 1) * limit).toString()).build()
-                result(url, "搜索")
+                search(query.keyword.trim(), page, limit)
             }
             "ranking" -> {
                 require(query.rankPeriod in setOf("day", "week", "month", "total") && query.audience in setOf("male", "female")) { "无效排行榜选项" }
@@ -223,6 +304,23 @@ class CopySourceClient(val source: SourceConfig, private val http: OkHttpClient,
         return CopyPage(entries, hasMore(json, entries.size, page, limit))
     }
 
+    private fun search(keyword: String, page: Int, limit: Int): JSONObject {
+        val failures = mutableListOf<String>()
+        for ((index, base) in searchBases.withIndex()) {
+            val url = base.newBuilder().addPathSegments("api/kb/web/searchcl/comics")
+                .addQueryParameter("q", keyword).addQueryParameter("q_type", "").addQueryParameter("platform", "2")
+                .addQueryParameter("limit", "$limit").addQueryParameter("offset", "${(page - 1) * limit}").build()
+            try { return requestWithRetry(url, "搜索", false) }
+            catch (error: IOException) {
+                if (error is CopyRateLimitFailure || Thread.currentThread().isInterrupted ||
+                    error is HttpFailure && error.status !in setOf(404, 408) && error.status < 500) throw error
+                failures += connectionFailure(url, "搜索", error)
+                if (index == searchBases.lastIndex) throw IOException(failures.joinToString("\n"), error)
+            }
+        }
+        error("没有可用的搜索地址")
+    }
+
     fun topics(page: Int): CopyPage<CopyTopic> {
         require(page in 1..100_000)
         val limit = 20
@@ -235,7 +333,8 @@ class CopySourceClient(val source: SourceConfig, private val http: OkHttpClient,
     fun details(existing: Manga): Manga {
         val json = result(contentUrl("api/v3/comic2/${pathKey(existing.key)}"), "漫画详情", content = true)
         val comic = json.optJSONObject("comic") ?: error("拷贝漫画没有返回漫画详情")
-        val groups = json.optJSONObject("groups")?.let { value -> value.keys().asSequence().map { key -> key to (value.optJSONObject(key) ?: JSONObject().put("name", key)) }.toList() }
+        val groups = json.optJSONObject("groups")?.let { value -> value.keys().asSequence().sortedWith(compareBy<String> { it != "default" }.thenBy { it })
+            .map { key -> key to (value.optJSONObject(key) ?: JSONObject().put("name", key)) }.toList() }
             ?: listOf("default" to JSONObject().put("name", ""))
         val chapters = mutableListOf<Chapter>()
         for ((key, group) in groups) {
@@ -267,17 +366,35 @@ class CopySourceClient(val source: SourceConfig, private val http: OkHttpClient,
                 if (raw.isEmpty() || offset >= data.optInt("total", offset) || chapters.size >= 100_000) break
             }
         }
-        val ordered = chapters.distinctBy { it.key }.sortedWith(compareByDescending<Chapter> { it.dateUploaded }.thenByDescending { it.number }.thenBy { it.key })
+        // The provider's index preserves volume series (01..18, then D01..D18) and extras.
+        val groupOrder = groups.mapIndexed { index, pair -> pair.first to index }.toMap()
+        val unique = chapters.distinctBy { it.key }
+        val positions = unique.associate { chapter ->
+            val meta = JSONObject(chapter.metadata)
+            chapter.key to ((groupOrder[meta.optString("copyGroup")] ?: 0) to
+                ((meta.value("index") as? Number)?.toDouble() ?: chapter.sourceOrder.toDouble()))
+        }
+        val ordered = unique.sortedWith(compareByDescending<Chapter> { it.dateUploaded }
+            .thenBy { positions.getValue(it.key).first }.thenByDescending { positions.getValue(it.key).second })
             .mapIndexed { index, chapter -> chapter.copy(sourceOrder = index) }
         return manga(comic).copy(chapters = ordered)
     }
-    fun pages(chapter: Chapter): List<String> {
+    @Synchronized fun pages(chapter: Chapter): List<String> {
         val key = JSONObject(chapter.metadata).optString("copyMangaKey")
         require(key.isNotBlank()) { "章节缺少漫画标识，请先刷新漫画详情" }
-        val data = result(contentUrl("api/v3/comic/${pathKey(key)}/chapter/${pathKey(chapter.key)}"), "阅读图片", content = true)
+        val url = contentUrl("api/v3/comic/${pathKey(key)}/chapter/${pathKey(chapter.key)}")
+        pageCache[url.toString()]?.takeIf { it.until > now() }?.let { return it.pages }
+        policy.before(url)
+        val spacing = lastPageRequest + 500 - now()
+        if (spacing > 0) pause(spacing)
+        lastPageRequest = now()
+        val data = result(url, "阅读图片", content = true)
         require(!data.optBoolean("is_lock")) { "该章节需要拷贝账号的阅读权限" }
         val content = data.optJSONObject("chapter") ?: error("拷贝漫画未返回章节图片")
-        return orderedPages(content).map(::webUrl)
+        val pages = orderedPages(content).map(::webUrl)
+        pageCache[url.toString()] = CachedPages(now() + 300_000, pages)
+        while (pageCache.size > 32) pageCache.remove(pageCache.keys.first())
+        return pages
     }
 
     fun manga(raw: JSONObject): Manga {
