@@ -34,6 +34,15 @@ actor CopyContentRoute {
     func succeeded(_ base: URL) { preferred = base }
 }
 
+/// Routes that just failed to connect, so other requests try them last for two minutes instead of waiting on them again.
+actor CopyRouteHealth {
+    private var coolingUntil: [String: Date] = [:]
+    private func key(_ url: URL) -> String { "\(url.host ?? ""):\(url.port ?? 443)" }
+    func cooling(_ url: URL) -> Bool { (coolingUntil[key(url)] ?? .distantPast) > Date() }
+    func failed(_ url: URL) { coolingUntil[key(url)] = Date().addingTimeInterval(120) }
+    func succeeded(_ url: URL) { coolingUntil[key(url)] = nil }
+}
+
 struct CopySearchEndpoint: Sendable, Equatable { let base: URL; let api: Bool }
 
 actor CopySearchRoutes {

@@ -108,6 +108,8 @@ struct CopyClient: Sendable {
     static let website = URL(string: "https://www.2026copy.com")!
     static let mainlandWebsite = URL(string: "https://www.copy4000.com")!
     static let api = URL(string: "https://api.copy2000.online")!
+    /// The API domain the official app currently uses; same catalog, rankings, topics and filters.
+    static let apiAlternate = URL(string: "https://api.copy202601.com")!
     static let apiVersion = "3.0.9"
     static let contentApi = URL(string: "https://www.manga2026.xyz")!
     static let contentBackup = URL(string: "https://mapi.hotmangasg.com")!
@@ -123,6 +125,8 @@ struct CopyClient: Sendable {
 
     private let session: URLSession
     private let browseBase: URL
+    private let browseAlternates: [URL]
+    private let browseRoute: CopyContentRoute
     private let contentBase: URL
     private let contentAlternates: [URL]
     private let contentRoute: CopyContentRoute
@@ -130,14 +134,18 @@ struct CopyClient: Sendable {
     private let searchApiBase: URL?
     private let searchRoutes = CopySearchRoutes()
     private static let sharedPolicy = CopyRequestPolicy()
+    private static let sharedBrowseRoute = CopyContentRoute()
+    private static let health = CopyRouteHealth()
     private let policy = Self.sharedPolicy
     private let readCache = CopyReadCache()
     private let metadataCache = CopyMetadataCache()
 
     init(session: URLSession = Self.networkSession, browseBase: URL = Self.api, contentBase: URL = Self.contentApi,
-         searchBases: [URL]? = nil, contentAlternates: [URL]? = nil, searchApiBase: URL? = nil) {
+         searchBases: [URL]? = nil, contentAlternates: [URL]? = nil, searchApiBase: URL? = nil, browseAlternates: [URL]? = nil) {
         self.session = session
         self.browseBase = browseBase
+        self.browseAlternates = browseAlternates ?? (browseBase == Self.api ? [Self.apiAlternate] : [])
+        self.browseRoute = browseBase == Self.api ? Self.sharedBrowseRoute : CopyContentRoute()
         self.contentBase = contentBase
         self.searchBases = searchBases ?? [Self.mainlandWebsite, Self.website]
         self.searchApiBase = searchApiBase ?? (searchBases == nil ? Self.contentBackup : nil)
@@ -192,77 +200,100 @@ struct CopyClient: Sendable {
             target.percentEncodedQuery = source.percentEncodedQuery
             return target.url!
         }
-        let url: URL
-        if content, original.host == contentBase.host, original.port == contentBase.port {
-            url = rebased(original, to: await contentRoute.current(fallback: contentBase))
-        } else { url = original }
-        do {
-            return try await requestWithRetry(url, label: label, content: content)
-        } catch {
-            try Task.checkCancellation()
-            if error is CancellationError { throw error }
-            if (error as NSError).code == URLError.Code.cancelled.rawValue && (error as NSError).domain == NSURLErrorDomain {
-                throw CancellationError()
+        func same(_ url: URL, _ base: URL) -> Bool { url.host == base.host && url.port == base.port }
+        let browse = !content && same(original, browseBase)
+        var candidates: [URL]
+        if content, same(original, contentBase) {
+            let preferred = await contentRoute.current(fallback: contentBase)
+            candidates = fallback ? [preferred, contentBase] + contentAlternates : [preferred]
+        } else if browse {
+            let preferred = await browseRoute.current(fallback: browseBase)
+            candidates = [preferred, browseBase] + browseAlternates
+        } else {
+            candidates = [original]
+        }
+        var routes: [URL] = []
+        for candidate in candidates where !routes.contains(candidate) { routes.append(candidate) }
+        // The legacy catalog silently ignores the modern collection/status filters.
+        // Returning its unfiltered list would label ongoing books as finished.
+        let filters = URLComponents(url: original, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let filtered = !content && original.path == "/api/v3/comics" && filters.contains {
+            ["top", "status"].contains($0.name) && !($0.value ?? "").isEmpty
+        }
+        let legacy = browse && fallback && browseBase != contentBase && original.path.hasPrefix("/api/v3/")
+        // Only Copy has the topic list, topic details and the filtered collections; the backup service answers them empty or unfiltered.
+        let copyOnly = filtered || original.path == "/api/v3/topics" ||
+            (original.path.hasPrefix("/api/v3/topic/") && !original.path.hasSuffix("/contents"))
+        // A route that just failed to connect is tried last for a while, and skipped when the backup service can answer.
+        var healthy: [URL] = []
+        var cooling: [URL] = []
+        for route in routes {
+            if await Self.health.cooling(route) { cooling.append(route) } else { healthy.append(route) }
+        }
+        let ordered = healthy + (legacy && !copyOnly ? [] : cooling)
+        var failures: [String] = []
+        var timedOut = false
+        // Resets on Copy's domains come and go within seconds, so what only Copy can answer gets one more quick round.
+        let rounds = copyOnly ? 2 : 1
+        for round in 0..<rounds {
+            if round > 0 {
+                if timedOut { break }
+                try await Task.sleep(nanoseconds: 800_000_000)
             }
-            let networkFailure = (error as NSError).domain == NSURLErrorDomain
-            let serverFailure: Bool
-            if case CopyError.http(let status, _) = error { serverFailure = status >= 500 } else { serverFailure = false }
-            if content, fallback, networkFailure || serverFailure {
-                var failures = [connectionFailure(url, label: label, error: error)]
-                for base in ([contentBase] + contentAlternates).filter({ $0.host != url.host || $0.port != url.port }) {
-                    let alternate = rebased(url, to: base)
-                    do {
-                        let data = try await requestWithRetry(alternate, label: label, content: true)
-                        await contentRoute.succeeded(base)
-                        return data
-                    } catch {
-                        try Task.checkCancellation()
-                        if error is CancellationError { throw error }
-                        if (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == URLError.Code.cancelled.rawValue { throw CancellationError() }
-                        if case CopyError.rateLimited = error { throw error }
-                        failures.append(connectionFailure(alternate, label: label, error: error))
-                    }
+            for (index, base) in ordered.enumerated() {
+                let target = base == original ? original : rebased(original, to: base)
+                // A stalled route is left for the next one; only the last route gets a second, fresh attempt after a timeout.
+                let lastRoute = round == rounds - 1 && index == ordered.count - 1 && !(legacy && !filtered)
+                do {
+                    let data = try await requestWithRetry(target, label: label, content: content, retryTimeout: lastRoute)
+                    await Self.health.succeeded(base)
+                    if content { await contentRoute.succeeded(base) } else if browse { await browseRoute.succeeded(base) }
+                    return data
+                } catch {
+                    try Task.checkCancellation()
+                    if error is CancellationError { throw error }
+                    let failure = error as NSError
+                    if failure.domain == NSURLErrorDomain && failure.code == URLError.Code.cancelled.rawValue { throw CancellationError() }
+                    if case CopyError.rateLimited = error { throw error }
+                    // Answers such as a refused permission are final; only connection and server failures change route.
+                    let network = failure.domain == NSURLErrorDomain
+                    var serverFailure = false
+                    if case CopyError.http(let status, _) = error { serverFailure = status >= 500 }
+                    guard network || serverFailure else { throw error }
+                    if network { await Self.health.failed(base) }
+                    if network && failure.code == URLError.Code.timedOut.rawValue { timedOut = true }
+                    if round == 0 { failures.append(connectionFailure(target, label: label, error: error)) }
                 }
-                throw CopyError.message(failures.joined(separator: "\n备用 HTTPS 接口："))
             }
-            guard fallback, !content, browseBase != contentBase, url.host == browseBase.host, url.port == browseBase.port,
-                url.path.hasPrefix("/api/v3/"), networkFailure || serverFailure else {
-                if networkFailure { throw CopyError.message(connectionFailure(url, label: label, error: error)) }
-                throw error
-            }
-            // The legacy catalog silently ignores the modern collection/status filters.
-            // Returning its unfiltered list would label ongoing books as finished.
-            let filters = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-            if url.path == "/api/v3/comics", filters.contains(where: {
-                ["top", "status"].contains($0.name) && !($0.value ?? "").isEmpty
-            }) {
-                throw CopyError.message("筛选目录暂时连接失败，备用接口不支持这个筛选条件。请稍后重试或更换网络。\n" +
-                    connectionFailure(url, label: label, error: error))
-            }
-            var alternate = URLComponents(url: contentBase, resolvingAgainstBaseURL: false)!
-            let original = URLComponents(url: url, resolvingAgainstBaseURL: false)!
-            alternate.percentEncodedPath = original.percentEncodedPath
-            alternate.queryItems = original.queryItems
-            if !(alternate.queryItems ?? []).contains(where: { $0.name == "platform" }) {
-                alternate.queryItems = (alternate.queryItems ?? []) + [URLQueryItem(name: "platform", value: "3")]
-            }
-            do {
-                return try await result(alternate.url!, label: label, content: true)
-            } catch let secondary {
-                try Task.checkCancellation()
-                if secondary is CancellationError { throw secondary }
-                if case CopyError.rateLimited = secondary { throw secondary }
-                throw CopyError.message(connectionFailure(url, label: label, error: error) + "\n备用 HTTPS 接口：" +
-                    connectionFailure(alternate.url!, label: label, error: secondary))
-            }
+        }
+        guard legacy else { throw CopyError.message(failures.joined(separator: "\n备用 HTTPS 接口：")) }
+        if filtered {
+            throw CopyError.message("筛选目录暂时连接失败，备用接口不支持这个筛选条件。请稍后重试或更换网络。\n" +
+                failures.joined(separator: "\n备用 HTTPS 接口："))
+        }
+        var alternate = URLComponents(url: contentBase, resolvingAgainstBaseURL: false)!
+        let source = URLComponents(url: original, resolvingAgainstBaseURL: false)!
+        alternate.percentEncodedPath = source.percentEncodedPath
+        alternate.queryItems = source.queryItems
+        if !(alternate.queryItems ?? []).contains(where: { $0.name == "platform" }) {
+            alternate.queryItems = (alternate.queryItems ?? []) + [URLQueryItem(name: "platform", value: "3")]
+        }
+        do {
+            return try await result(alternate.url!, label: label, content: true)
+        } catch let secondary {
+            try Task.checkCancellation()
+            if secondary is CancellationError { throw secondary }
+            if case CopyError.rateLimited = secondary { throw secondary }
+            let all = failures + [connectionFailure(alternate.url!, label: label, error: secondary)]
+            throw CopyError.message(all.joined(separator: "\n备用 HTTPS 接口："))
         }
     }
 
-    private func requestWithRetry(_ url: URL, label: String, content: Bool) async throws -> [String: Any] {
+    private func requestWithRetry(_ url: URL, label: String, content: Bool, retryTimeout: Bool = true) async throws -> [String: Any] {
         var attempt = 0
         while true {
             try await policy.before(url)
-            do { return try await requestTransiently(url, label: label, content: content, rateAttempt: attempt) }
+            do { return try await requestTransiently(url, label: label, content: content, rateAttempt: attempt, retryTimeout: retryTimeout) }
             catch CopyError.rateLimited(let until) {
                 guard attempt < 2, until.timeIntervalSinceNow <= CopyRequestPolicy.maximumAutomaticWait else { throw CopyError.rateLimited(until) }
                 attempt += 1
@@ -270,7 +301,7 @@ struct CopyClient: Sendable {
         }
     }
 
-    private func requestTransiently(_ url: URL, label: String, content: Bool, rateAttempt: Int) async throws -> [String: Any] {
+    private func requestTransiently(_ url: URL, label: String, content: Bool, rateAttempt: Int, retryTimeout: Bool) async throws -> [String: Any] {
         do {
             return try await requestResult(url, label: label, content: content, rateAttempt: rateAttempt)
         } catch {
@@ -279,6 +310,7 @@ struct CopyClient: Sendable {
             let transient: [URLError.Code] = [.networkConnectionLost, .timedOut, .cannotConnectToHost,
                 .dnsLookupFailed, .secureConnectionFailed]
             guard failure.domain == NSURLErrorDomain, transient.contains(where: { $0.rawValue == failure.code }) else { throw error }
+            if !retryTimeout && failure.code == URLError.Code.timedOut.rawValue { throw error }
             try await Task.sleep(nanoseconds: 150_000_000)
             let fresh = URLSession(configuration: session.configuration)
             defer { fresh.invalidateAndCancel() }
@@ -361,42 +393,11 @@ struct CopyClient: Sendable {
                     if error is CancellationError { throw error }
                     if (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == URLError.Code.cancelled.rawValue { throw CancellationError() }
                     if case CopyError.rateLimited = error { throw error }
-                    return try await alternateHome(error)
+                    return try await recoverHome(error)
                 }
             }
-            return try await alternateHome(error)
+            return try await recoverHome(error)
         }
-    }
-
-    private func alternateHome(_ primary: Error) async throws -> CopyHome {
-        if browseBase != contentBase {
-            do {
-                let json = try await result(url(contentBase, "api/v3/h5/homeIndex", content: true), label: "备用首页", content: true)
-                var home = try parseHome(json)
-                if !home.sections.contains(where: { $0.id == "newComics" }) || !home.sections.contains(where: { $0.id == "finishComics" }) {
-                    do {
-                        let feeds = try await recoverHome(primary)
-                        let sectionIDs = Set(home.sections.map(\.id)), periods = Set(home.rankings.map(\.period))
-                        home.sections += feeds.sections.filter { !sectionIDs.contains($0.id) }
-                        home.rankings += feeds.rankings.filter { !periods.contains($0.period) }
-                    } catch {
-                        try Task.checkCancellation()
-                        if error is CancellationError { throw error }
-                        if case CopyError.rateLimited = error { throw error }
-                    }
-                }
-                home.notice = "已使用备用首页接口。"
-                home.diagnostics = "首页接口：\(primary.localizedDescription)\n备用首页：\(contentBase.host ?? "")"
-                return home
-            } catch {
-                try Task.checkCancellation()
-                if error is CancellationError { throw error }
-                if (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == URLError.Code.cancelled.rawValue { throw CancellationError() }
-                if case CopyError.rateLimited = error { throw error }
-                return try await recoverHome(CopyError.message("\(primary.localizedDescription)\n备用首页（\(contentBase.host ?? "")）：\(error.localizedDescription)"))
-            }
-        }
-        return try await recoverHome(primary)
     }
 
     func parseHome(_ json: [String: Any]) throws -> CopyHome {
@@ -406,15 +407,12 @@ struct CopyClient: Sendable {
             ("rankDayComics", "今日热门"), ("finishComics", "完结佳作")
         ]
         home.sections = definitions.compactMap { key, title in
-            let entries = unique(items(json[key]).compactMap(comic))
+            let entries = comics(json[key])
             return entries.isEmpty ? nil : CopySection(id: key, title: title, entries: entries)
         }
-        if !home.sections.contains(where: { $0.id == "hotComics" }) {
-            let updates = unique((items(json["updateWeeklyFreeComics"]) + items(json["updateWeeklyChargeComics"])).compactMap(comic))
-            if !updates.isEmpty { home.sections.append(CopySection(id: "hotComics", title: "本周更新", entries: updates)) }
-        }
         home.features = items(json["banners"]).compactMap { banner in
-            guard (banner["type"] as? Int) == 1, let raw = banner["comic"] as? [String: Any], let entry = comic(raw) else { return nil }
+            guard (banner["type"] as? Int) == 1, let raw = banner["comic"] as? [String: Any], Self.isFree(raw),
+                  let entry = comic(raw) else { return nil }
             let brief = (banner["brief"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? entry.manga.title
             return CopyFeature(title: brief, image: webUrl(banner["cover"] as? String), comic: entry)
         }
@@ -422,9 +420,7 @@ struct CopyClient: Sendable {
         home.topics = (topics.isEmpty ? items(json["topics"]) : topics).map(topic)
         let periods = [("day", "日榜", "rankDayComics"), ("week", "周榜", "rankWeekComics"), ("month", "月榜", "rankMonthComics")]
         home.rankings = periods.compactMap { period, title, key in
-            let raw = items(json[key])
-            let values = raw.isEmpty && period == "week" ? items(json["rankWeeklyFreeComics"]) : raw
-            let entries = unique(values.compactMap(comic))
+            let entries = comics(json[key])
             return entries.isEmpty ? nil : CopyRanking(period: period, title: title, entries: entries)
         }
         guard !home.sections.isEmpty || !home.features.isEmpty || !home.rankings.isEmpty else {
@@ -497,11 +493,15 @@ struct CopyClient: Sendable {
         home.sections = ordered.compactMap(\.section)
         home.rankings = ordered.compactMap(\.ranking)
         home.topics = ordered.first { $0.id == "topics" }?.topics ?? []
-        home.diagnostics = (["首页接口：\(primary.localizedDescription)"] + ordered.compactMap(\.error)).joined(separator: "\n")
+        let failures = ordered.compactMap(\.error)
+        let diagnostics = (["首页接口：\(primary.localizedDescription)"] + failures).joined(separator: "\n")
         guard !home.sections.isEmpty || !home.rankings.isEmpty else {
-            throw CopyError.message("首页加载失败，请稍后重试。\n\(home.diagnostics ?? "")")
+            throw CopyError.message("首页加载失败，请稍后重试。\n\(diagnostics)")
         }
-        home.notice = "首页接口暂不可用，已从漫画目录恢复内容。"
+        if !failures.isEmpty {
+            home.notice = "部分栏目加载失败。"
+            home.diagnostics = diagnostics
+        }
         return home
     }
 
@@ -516,22 +516,21 @@ struct CopyClient: Sendable {
                 json = try await search(keyword, limit: limit, offset: offset, page: page)
             case "ranking":
                 json = try await result(url(browseBase, "api/v3/ranks", [
-                    ("limit", String(limit)), ("offset", offset), ("type", "1"),
+                    ("limit", String(limit)), ("offset", offset), ("free_type", "1"), ("type", "1"),
                     ("audience_type", query.audience), ("date_type", query.rankPeriod)
                 ]), label: "排行榜")
             case "topic":
                 let topic = try pathKey(query.topic)
                 json = try await result(url(browseBase, "api/v3/topic/\(topic)/contents", [
-                    ("limit", String(limit)), ("offset", offset)
+                    ("limit", String(limit)), ("offset", offset), ("free_type", "1")
                 ]), label: "专题漫画")
             default:
-                var parameters = [("limit", String(limit)), ("offset", offset), ("ordering", query.order)]
+                var parameters = [("limit", String(limit)), ("offset", offset), ("free_type", "1"), ("ordering", query.order)]
                 if !query.theme.isEmpty { parameters.append(("theme", query.theme)) }
                 if query.kind == "finished" { parameters.append(("top", "finish")) }
                 json = try await result(url(browseBase, "api/v3/comics", parameters), label: "漫画目录")
         }
-        let entries = unique(items(json).compactMap(comic))
-        return CopyPage(entries: entries, more: hasMore(json, count: entries.count, page: page, limit: limit))
+        return CopyPage(entries: comics(json), more: hasMore(json, count: items(json).count, page: page, limit: limit))
     }
 
     private func search(_ keyword: String, limit: Int, offset: String, page: Int) async throws -> [String: Any] {
@@ -544,11 +543,11 @@ struct CopyClient: Sendable {
         } else { choices = defaults }
         var failures: [String] = []
         for (index, endpoint) in choices.enumerated() {
-            let address = try url(endpoint.base, endpoint.api ? "api/v3/search/comic" : "api/kb/web/searchcl/comics", [
-                ("q", keyword), ("q_type", ""), ("platform", endpoint.api ? "3" : "2"), ("limit", String(limit)), ("offset", offset)
-            ])
+            var parameters = [("q", keyword), ("q_type", ""), ("platform", endpoint.api ? "3" : "2"), ("limit", String(limit)), ("offset", offset)]
+            if endpoint.api { parameters.append(("free_type", "1")) }
+            let address = try url(endpoint.base, endpoint.api ? "api/v3/search/comic" : "api/kb/web/searchcl/comics", parameters)
             do {
-                let data = try await requestWithRetry(address, label: "搜索", content: endpoint.api)
+                let data = try await requestWithRetry(address, label: "搜索", content: endpoint.api, retryTimeout: index == choices.count - 1)
                 try await searchRoutes.selected(keyword, token: selection.token, endpoint: endpoint)
                 return data
             }
@@ -572,6 +571,8 @@ struct CopyClient: Sendable {
         let limit = 20
         let json = try await result(url(browseBase, "api/v3/topics", [("limit", String(limit)), ("offset", String((page - 1) * limit))]), label: "专题")
         let entries = items(json).map(topic)
+        // An empty first page only comes from the backup service, which has no topics; it shows as a failure to retry.
+        guard page > 1 || !entries.isEmpty else { throw CopyError.message("拷贝漫画暂未返回专题，请稍后重试。") }
         return CopyPage(entries: entries, more: hasMore(json, count: entries.count, page: page, limit: limit))
     }
 
@@ -593,6 +594,7 @@ struct CopyClient: Sendable {
         return try await metadataCache.value(address) {
             let json = try await self.result(address, label: "漫画详情", content: true)
             guard let raw = json["comic"] as? [String: Any], let entry = self.comic(raw) else { throw CopyError.message("\(Self.name)没有返回漫画详情") }
+            guard Self.isFree(raw) else { throw CopyError.message("付费漫画已屏蔽") }
             var groups: [(String, String)] = []
             if let value = json["groups"] as? [String: Any] {
                 groups = value.keys.sorted().map { groupKey in
@@ -710,6 +712,16 @@ struct CopyClient: Sendable {
             .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
         let intro = (json["intro"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? json["brief"] as? String ?? ""
         return CopyTopic(key: key, title: json["title"] as? String ?? "", image: webUrl(json["cover"] as? String), subtitle: subtitle, intro: intro)
+    }
+
+    /// Paid titles (free_type 2) are R18 and need an account; the bookstore only lists free comics.
+    static func isFree(_ raw: [String: Any]) -> Bool {
+        let json = raw["comic"] as? [String: Any] ?? raw
+        return ((json["free_type"] as? [String: Any])?["value"] as? Int) != 2
+    }
+
+    private func comics(_ value: Any?) -> [CopyComic] {
+        unique(items(value).filter(Self.isFree).compactMap(comic))
     }
 
     private func items(_ value: Any?) -> [[String: Any]] {

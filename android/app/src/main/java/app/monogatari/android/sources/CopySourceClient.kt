@@ -27,6 +27,8 @@ object CopySource {
     const val WEBSITE = "https://www.2026copy.com"
     const val MAINLAND_WEBSITE = "https://www.copy4000.com"
     const val API = "https://api.copy2000.online"
+    /** The API domain the official app currently uses; same catalog, rankings, topics and filters. */
+    const val API_ALTERNATE = "https://api.copy202601.com"
     const val API_VERSION = "3.0.9"
     const val CONTENT_API = "https://www.manga2026.xyz"
     const val CONTENT_BACKUP = "https://mapi.hotmangasg.com"
@@ -64,9 +66,12 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
     searchAddresses: List<String>? = null,
     contentAlternates: List<String>? = null,
     searchApiAddress: String? = null,
+    apiAlternates: List<String>? = null,
     private val now: () -> Long = System::currentTimeMillis,
     private val pause: (Long) -> Unit = Thread::sleep) {
     private val api = checkedAddress(apiAddress)
+    private val apiBackups = (apiAlternates ?: if (api.host == "api.copy2000.online") listOf(CopySource.API_ALTERNATE) else emptyList()).map(::checkedAddress)
+    @Volatile private var preferredApi = api
     private val contentApi = checkedAddress(contentAddress)
     private val contentBackups = (contentAlternates ?: if (contentApi.host == "www.manga2026.xyz") listOf(CopySource.CONTENT_BACKUP) else emptyList()).map(::checkedAddress)
     @Volatile private var preferredContent = if (contentAlternates == null && contentApi.host == "www.manga2026.xyz")
@@ -103,62 +108,83 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
     private class HttpFailure(val status: Int, message: String) : IOException(message)
     private class EmptyHomeFailure(message: String) : IllegalStateException(message)
 
+    private fun rebased(url: HttpUrl, base: HttpUrl) = base.newBuilder().encodedPath(url.encodedPath).encodedQuery(url.encodedQuery).build()
+    private fun HttpUrl.on(base: HttpUrl) = host == base.host && port == base.port
+
+    /** A route that just failed to connect is tried last for two minutes, so other requests don't wait on it again. */
+    private val coolingUntil = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private fun HttpUrl.route() = "$host:$port"
+    private fun cooling(base: HttpUrl) = (coolingUntil[base.route()] ?: 0L) > now()
+
     private fun result(original: HttpUrl, label: String, content: Boolean = false, fallback: Boolean = true): JSONObject {
-        val url = if (content && original.host == contentApi.host && original.port == contentApi.port)
-            preferredContent.newBuilder().encodedPath(original.encodedPath).encodedQuery(original.encodedQuery).build() else original
-        try { return requestWithRetry(url, label, content) }
-        catch (failure: IOException) {
-            if (failure is CopyRateLimitFailure) throw failure
-            if (Thread.currentThread().isInterrupted) throw failure
-            if (content && fallback && (failure !is HttpFailure || failure.status >= 500)) {
-                val failures = mutableListOf(connectionFailure(url, label, failure))
-                for (base in (listOf(contentApi) + contentBackups).distinct().filter { it.host != url.host || it.port != url.port }) {
-                    val alternate = base.newBuilder().encodedPath(url.encodedPath).encodedQuery(url.encodedQuery).build()
-                    try { return requestWithRetry(alternate, label, true).also { preferredContent = base } }
-                    catch (secondary: Exception) {
-                        if (Thread.currentThread().isInterrupted || secondary is CopyRateLimitFailure) throw secondary
-                        failures += connectionFailure(alternate, label, secondary)
+        val routes = when {
+            content && original.on(contentApi) -> if (fallback) listOf(preferredContent, contentApi) + contentBackups else listOf(preferredContent)
+            !content && original.on(api) -> listOf(preferredApi, api) + apiBackups
+            else -> listOf(original)
+        }.distinct()
+        // The legacy catalog ignores these modern filters; don't show an unfiltered
+        // list under the finished/status/region collection the user selected.
+        val filtered = !content && original.encodedPath == "/api/v3/comics" && listOf("top", "status").any { !original.queryParameter(it).isNullOrEmpty() }
+        val legacy = !content && fallback && api != contentApi && original.on(api) && original.encodedPath.startsWith("/api/v3/")
+        // Only Copy has the topic list, topic details and the filtered collections; the backup service answers them empty or unfiltered.
+        val copyOnly = filtered || original.encodedPath == "/api/v3/topics" ||
+            original.encodedPath.startsWith("/api/v3/topic/") && !original.encodedPath.endsWith("/contents")
+        val ordered = routes.sortedBy(::cooling).filter { !cooling(it) || !legacy || copyOnly }
+        val failures = mutableListOf<String>()
+        var last: IOException? = null
+        // Resets on Copy's domains come and go within seconds, so what only Copy can answer gets one more quick round.
+        val rounds = if (copyOnly) 2 else 1
+        for (round in 0 until rounds) {
+            if (round > 0) { if (last is java.io.InterruptedIOException) break; pause(800) }
+            for ((index, base) in ordered.withIndex()) {
+                val target = if (base == original) original else rebased(original, base)
+                // A stalled route is left for the next one; only the last route gets a second, fresh attempt after a timeout.
+                val lastRoute = round == rounds - 1 && index == ordered.lastIndex && !(legacy && !filtered)
+                try {
+                    return requestWithRetry(target, label, content, lastRoute).also {
+                        coolingUntil.remove(base.route())
+                        if (content) preferredContent = base else if (original.on(api)) preferredApi = base
                     }
+                } catch (failure: IOException) {
+                    if (failure is CopyRateLimitFailure || Thread.currentThread().isInterrupted) throw failure
+                    // Answers such as a refused permission are final; only connection and server failures change route.
+                    if (failure is HttpFailure && failure.status < 500) throw IOException(connectionFailure(target, label, failure), failure)
+                    if (failure !is HttpFailure) coolingUntil[base.route()] = now() + 120_000
+                    if (round == 0) failures += connectionFailure(target, label, failure)
+                    if (last !is java.io.InterruptedIOException) last = failure
                 }
-                throw IOException(failures.joinToString("\n备用 HTTPS 接口："), failure)
             }
-            val canRetry = fallback && !content && api != contentApi && url.host == api.host && url.port == api.port &&
-                url.encodedPath.startsWith("/api/v3/") && (failure !is HttpFailure || failure.status >= 500)
-            if (!canRetry) throw IOException(connectionFailure(url, label, failure), failure)
-            // The legacy catalog ignores these modern filters; don't show an unfiltered
-            // list under the finished/status/region collection the user selected.
-            if (url.encodedPath == "/api/v3/comics" && listOf("top", "status").any { !url.queryParameter(it).isNullOrEmpty() }) {
-                throw IOException("筛选目录暂时连接失败，备用接口不支持这个筛选条件。请稍后重试或更换网络。\n" +
-                    connectionFailure(url, label, failure), failure)
-            }
-            val alternate = contentApi.newBuilder().encodedPath(url.encodedPath).encodedQuery(url.encodedQuery)
-                .apply { if (url.queryParameter("platform") == null) addQueryParameter("platform", "3") }.build()
-            try { return result(alternate, label, true) }
-            catch (secondary: Exception) {
-                if (Thread.currentThread().isInterrupted || secondary is CopyRateLimitFailure) throw secondary
-                throw IOException(connectionFailure(url, label, failure) + "\n备用 HTTPS 接口：" +
-                    connectionFailure(alternate, label, secondary), secondary)
-            }
+        }
+        val summary = failures.joinToString("\n备用 HTTPS 接口：")
+        if (!legacy) throw IOException(summary, last)
+        if (filtered) throw IOException("筛选目录暂时连接失败，备用接口不支持这个筛选条件。请稍后重试或更换网络。\n$summary", last)
+        val alternate = rebased(original, contentApi).newBuilder()
+            .apply { if (original.queryParameter("platform") == null) addQueryParameter("platform", "3") }.build()
+        try { return result(alternate, label, true) }
+        catch (secondary: Exception) {
+            if (Thread.currentThread().isInterrupted || secondary is CopyRateLimitFailure) throw secondary
+            throw IOException((failures + connectionFailure(alternate, label, secondary)).joinToString("\n备用 HTTPS 接口："), secondary)
         }
     }
 
-    private fun requestWithRetry(url: HttpUrl, label: String, content: Boolean): JSONObject {
+    private fun requestWithRetry(url: HttpUrl, label: String, content: Boolean, retryTimeout: Boolean = true): JSONObject {
         var attempt = 0
         while (true) {
             policy.before(url)
-            try { return requestTransiently(url, label, content, attempt) }
+            try { return requestTransiently(url, label, content, attempt, retryTimeout) }
             catch (failure: CopyRateLimitFailure) {
                 if (attempt++ >= 2 || failure.retryAt - now() > CopyRequestPolicy.MAX_AUTOMATIC_WAIT) throw failure
             }
         }
     }
 
-    private fun requestTransiently(url: HttpUrl, label: String, content: Boolean, rateAttempt: Int): JSONObject {
+    private fun requestTransiently(url: HttpUrl, label: String, content: Boolean, rateAttempt: Int, retryTimeout: Boolean): JSONObject {
         try { return requestResult(url, label, content, rateAttempt = rateAttempt) }
         catch (failure: IOException) {
             val certificateFailure = generateSequence<Throwable>(failure) { it.cause }
                 .any { it is CertificateException || it is SSLPeerUnverifiedException }
             if (failure is HttpFailure || failure is CopyRateLimitFailure || certificateFailure || Thread.currentThread().isInterrupted) throw failure
+            if (!retryTimeout && failure is java.io.InterruptedIOException) throw failure
             // Switching Wi-Fi/cellular can leave a stale pooled connection. Retry once with a fresh pool.
             // Some mobile routes stall an HTTP/2 stream. The one fresh retry still verifies HTTPS,
             // and also supports servers/routes that only carry HTTP/1.1 reliably.
@@ -204,53 +230,27 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
                 catch (retry: Exception) {
                     if (Thread.currentThread().isInterrupted) throw retry
                     if (retry is CopyRateLimitFailure) throw retry
-                    return alternateHome(retry)
+                    return recoverHome(retry)
                 }
             }
-            return alternateHome(error)
+            return recoverHome(error)
         }
-    }
-
-    private fun alternateHome(primary: Exception): CopyHome {
-        if (api != contentApi) {
-            try {
-                var home = parseHome(result(contentUrl("api/v3/h5/homeIndex"), "备用首页", content = true))
-                if (home.sections.none { it.id == "newComics" } || home.sections.none { it.id == "finishComics" }) {
-                    try {
-                        val feeds = recoverHome(primary)
-                        home = home.copy(sections = home.sections + feeds.sections.filter { feed -> home.sections.none { it.id == feed.id } },
-                            rankings = home.rankings + feeds.rankings.filter { feed -> home.rankings.none { it.period == feed.period } })
-                    } catch (error: Exception) { if (Thread.currentThread().isInterrupted || error is CopyRateLimitFailure) throw error }
-                }
-                return home.copy(notice = "已使用备用首页接口。", diagnostics = "首页接口：${primary.message}\n备用首页：${contentApi.host}")
-            } catch (alternate: Exception) {
-                if (Thread.currentThread().isInterrupted || alternate is CopyRateLimitFailure) throw alternate
-                return recoverHome(IOException("${primary.message}\n备用首页（${contentApi.host}）：${alternate.message}", alternate))
-            }
-        }
-        return recoverHome(primary)
     }
 
     internal fun parseHome(json: JSONObject): CopyHome {
         val definitions = listOf("recComics" to "为你推荐", "newComics" to "新书入库", "hotComics" to "热门更新",
             "rankDayComics" to "今日热门", "finishComics" to "完结佳作")
         val sections = definitions.mapNotNull { (key, title) ->
-            val entries = items(json.opt(key)).map(::manga).distinctBy { it.id }
+            val entries = comics(json.opt(key))
             if (entries.isEmpty()) null else CopySection(key, title, entries)
-        }.toMutableList()
-        if (sections.none { it.id == "hotComics" }) {
-            val updates = (items(json.opt("updateWeeklyFreeComics")) + items(json.opt("updateWeeklyChargeComics"))).map(::manga).distinctBy { it.id }
-            if (updates.isNotEmpty()) sections += CopySection("hotComics", "本周更新", updates)
         }
-        val features = items(json.opt("banners")).filter { it.optInt("type") == 1 && it.optJSONObject("comic") != null }.map { banner ->
-            val comic = manga(banner.getJSONObject("comic"))
+        val features = items(json.opt("banners")).filter { it.optInt("type") == 1 && it.optJSONObject("comic")?.let(::free) == true }.mapNotNull { banner ->
+            val comic = runCatching { manga(banner.getJSONObject("comic")) }.getOrNull() ?: return@mapNotNull null
             CopyFeature(banner.optString("brief").ifBlank { comic.title }, webUrl(banner.optString("cover")), comic)
         }
         val topics = items(json.opt("topicsList")).ifEmpty { items(json.opt("topics")) }.map(::topic)
         val rankings = listOf("day" to "日榜", "week" to "周榜", "month" to "月榜").mapNotNull { (period, title) ->
-            val key = "rank${period.replaceFirstChar(Char::uppercaseChar)}Comics"
-            val values = items(json.opt(key)).ifEmpty { if (period == "week") items(json.opt("rankWeeklyFreeComics")) else emptyList() }
-            values.map(::manga).distinctBy { it.id }.takeIf { it.isNotEmpty() }?.let { CopyRanking(period, title, it) }
+            comics(json.opt("rank${period.replaceFirstChar(Char::uppercaseChar)}Comics")).takeIf { it.isNotEmpty() }?.let { CopyRanking(period, title, it) }
         }
         if (sections.isEmpty() && features.isEmpty() && rankings.isEmpty())
             throw EmptyHomeFailure("首页返回成功，但没有可显示的漫画。返回结构：${homeSchema(json)}")
@@ -267,7 +267,7 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
         "$key=$shape，条目${entries.size}，有效漫画$valid" + (comic?.let { "，漫画字段(${it.keys().asSequence().sorted().joinToString(",")})，path_word=${it.opt("path_word")?.javaClass?.simpleName}" } ?: "")
     }.ifEmpty { "空对象 {}" }
 
-    /** The aggregated homepage can fail independently of the catalog. Never cache that as an empty success. */
+    /** The aggregated homepage can fail or come back empty independently of the catalog; Copy's own lists rebuild it. */
     private fun recoverHome(primary: Exception): CopyHome {
         data class Feed(val id: String, val title: String, val books: List<Manga> = emptyList(),
             val topics: List<CopyTopic> = emptyList(), val error: String? = null)
@@ -293,16 +293,17 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
         } finally { executor.shutdownNow() }
         val sections = feeds.filter { it.id.endsWith("Comics") && it.books.isNotEmpty() }.map { CopySection(it.id, it.title, it.books) }
         val rankings = feeds.filter { it.id in setOf("day", "week", "month") && it.books.isNotEmpty() }.map { CopyRanking(it.id, it.title, it.books) }
-        val diagnostics = (listOf("首页接口：${primary.message}") + feeds.mapNotNull { it.error }).joinToString("\n")
+        val failures = feeds.mapNotNull { it.error }
+        val diagnostics = (listOf("首页接口：${primary.message}") + failures).joinToString("\n")
         require(sections.isNotEmpty() || rankings.isNotEmpty()) { "首页加载失败，请稍后重试。\n$diagnostics" }
         return CopyHome(emptyList(), sections, feeds.first { it.id == "topics" }.topics, rankings,
-            notice = "首页接口暂不可用，已从漫画目录恢复内容。", diagnostics = diagnostics)
+            notice = if (failures.isEmpty()) null else "部分栏目加载失败。", diagnostics = diagnostics.takeIf { failures.isNotEmpty() })
     }
 
     fun catalog(query: CopyQuery, page: Int = 1): CopyPage<Manga> {
         require(page in 1..100_000) { "无效页码" }
         val limit = 30
-        val parameters = linkedMapOf("limit" to limit.toString(), "offset" to ((page - 1) * limit).toString())
+        val parameters = linkedMapOf("limit" to limit.toString(), "offset" to ((page - 1) * limit).toString(), "free_type" to "1")
         val json = when (query.kind) {
             "search" -> {
                 if (query.keyword.isBlank()) return CopyPage(emptyList(), false)
@@ -323,8 +324,8 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
                 result(apiUrl("api/v3/comics", parameters), "漫画目录")
             }
         }
-        val entries = items(json).map(::manga).distinctBy { it.id }
-        return CopyPage(entries, hasMore(json, entries.size, page, limit))
+        val received = items(json).size
+        return CopyPage(comics(json), hasMore(json, received, page, limit))
     }
 
     private fun search(keyword: String, page: Int, limit: Int): JSONObject {
@@ -340,9 +341,10 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
         for ((index, endpoint) in choices.withIndex()) {
             val url = endpoint.base.newBuilder().addPathSegments(if (endpoint.api) "api/v3/search/comic" else "api/kb/web/searchcl/comics")
                 .addQueryParameter("q", keyword).addQueryParameter("q_type", "").addQueryParameter("platform", if (endpoint.api) "3" else "2")
-                .addQueryParameter("limit", "$limit").addQueryParameter("offset", "${(page - 1) * limit}").build()
+                .addQueryParameter("limit", "$limit").addQueryParameter("offset", "${(page - 1) * limit}")
+                .apply { if (endpoint.api) addQueryParameter("free_type", "1") }.build()
             try {
-                val data = requestWithRetry(url, "搜索", endpoint.api)
+                val data = requestWithRetry(url, "搜索", endpoint.api, retryTimeout = index == choices.lastIndex)
                 synchronized(searches) { if (searches[keyword] === state) state.endpoint = endpoint }
                 return data
             }
@@ -361,6 +363,7 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
         val limit = 20
         val json = result(apiUrl("api/v3/topics", mapOf("limit" to "$limit", "offset" to "${(page - 1) * limit}")), "专题")
         val entries = items(json).map(::topic)
+        require(page > 1 || entries.isNotEmpty()) { "拷贝漫画暂未返回专题，请稍后重试。" }
         return CopyPage(entries, hasMore(json, entries.size, page, limit))
     }
     fun topicDetail(key: String): CopyTopic = topic(result(apiUrl("api/v3/topic/${pathKey(key)}"), "专题详情"))
@@ -368,6 +371,7 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
     fun details(existing: Manga): Manga {
         val json = result(contentUrl("api/v3/comic2/${pathKey(existing.key)}"), "漫画详情", content = true)
         val comic = json.optJSONObject("comic") ?: error("拷贝漫画没有返回漫画详情")
+        require(free(comic)) { "付费漫画已屏蔽" }
         val groups = json.optJSONObject("groups")?.let { value -> value.keys().asSequence().sortedWith(compareBy<String> { it != "default" }.thenBy { it })
             .map { key -> key to (value.optJSONObject(key) ?: JSONObject().put("name", key)) }.toList() }
             ?: listOf("default" to JSONObject().put("name", ""))
@@ -481,6 +485,10 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
     }
     private fun webUrl(address: String): String = address.takeIf { it.isNotBlank() }?.let { CopySource.imageUrl(website.resolve(it)?.toString() ?: error("无效漫画资源地址")) }.orEmpty()
     private fun pathKey(key: String): String = key.also { require(it.isNotBlank() && it.length <= 256 && '/' !in it && '\\' !in it && it !in setOf(".", "..")) { "无效漫画标识" } }
+    /** Paid titles (free_type 2) are R18 and need an account; the bookstore only lists free comics. */
+    private fun free(json: JSONObject): Boolean = (json.optJSONObject("comic") ?: json).optJSONObject("free_type")?.optInt("value") != 2
+    /** A malformed or paid entry is skipped instead of failing the whole feed. */
+    private fun comics(value: Any?): List<Manga> = items(value).filter(::free).mapNotNull { runCatching { manga(it) }.getOrNull() }.distinctBy { it.id }
     private fun items(value: Any?): List<JSONObject> {
         val array = when (value) { is JSONArray -> value; is JSONObject -> value.optJSONArray("list"); else -> null }
             ?: return emptyList()

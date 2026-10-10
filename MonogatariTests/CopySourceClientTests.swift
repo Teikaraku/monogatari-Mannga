@@ -195,36 +195,103 @@ struct CopySourceClientTests {
         return try String(contentsOf: address, encoding: .utf8)
     }
 
-    @Test func actualHomePayloadsRetainBannersRecommendationsAndTheCorrectRankPeriod() throws {
-        for name in ["primary", "alternate"] {
-            let value = try JSONSerialization.jsonObject(with: Data(fixtureBody("copy-home-\(name)").utf8)) as! [String: Any]
-            let home = try CopyClient().parseHome(value["results"] as! [String: Any])
-            #expect(home.features.count == 5)
-            #expect(home.sections.contains { $0.id == "recComics" })
-            #expect(!home.topics.isEmpty && !home.rankings.isEmpty && home.notice == nil)
-            if name == "primary" { #expect(home.sections.count == 5) }
-            else {
-                #expect(home.sections.first { $0.id == "hotComics" }?.title == "本周更新")
-                #expect(home.rankings.first?.period == "week")
-            }
-        }
+    @Test func actualHomePayloadRetainsBannersAndRecommendations() throws {
+        let value = try JSONSerialization.jsonObject(with: Data(fixtureBody("copy-home-primary").utf8)) as! [String: Any]
+        let home = try CopyClient().parseHome(value["results"] as! [String: Any])
+        #expect(home.features.count == 5)
+        #expect(home.sections.contains { $0.id == "recComics" })
+        #expect(!home.topics.isEmpty && !home.rankings.isEmpty && home.notice == nil)
+        #expect(home.sections.count == 5)
     }
 
-    @Test func persistentlyEmptyPrimaryUsesTheAlternateHomepageAndCompletesMissingShelves() async throws {
-        let alternate = try fixtureBody("copy-home-alternate")
+    @Test func persistentlyEmptyPrimaryRebuildsFromCopyListsWithoutTheBackupHomepage() async throws {
         let feed = "{\"code\":200,\"results\":{\"list\":[\(comic)],\"total\":1}}"
         let fixture = CopyFixture { request, backup in
-            if backup { return .json(alternate) }
+            if backup { return .status(500) }
             return .json(request.url!.path.hasSuffix("homeIndex") ? #"{"code":200,"results":{"recComics":{"list":[]},"banners":[]}}"# : feed)
         }
         let home = try await fixture.client.home()
-        #expect(home.features.count == 5)
-        #expect(home.sections.contains { $0.id == "newComics" } && home.sections.contains { $0.id == "finishComics" })
-        #expect(Set(home.rankings.map(\.period)) == Set(["day", "week", "month"]))
-        #expect(home.notice == "已使用备用首页接口。")
-        #expect(home.diagnostics?.contains("条目0") == true)
-        #expect(fixture.requests.filter { $0.url?.host == fixture.content.host }.count == 1)
-        #expect(fixture.requests.count == 10)
+        #expect(home.sections.map(\.id) == ["newComics", "hotComics", "finishComics"])
+        #expect(home.rankings.map(\.period) == ["day", "week", "month"])
+        #expect(home.notice == nil && home.diagnostics == nil)
+        #expect(fixture.requests.allSatisfy { $0.url?.host == fixture.browse.host })
+        #expect(fixture.requests.count == 9)
+    }
+
+    @Test func paidComicsNeverReachFeedsSearchOrDetails() async throws {
+        let paid = #"{"name":"Paid","path_word":"paid","free_type":{"display":"付費","value":2}}"#
+        let free = #"{"name":"Free","path_word":"free","free_type":{"display":"免費","value":1}}"#
+        let home = "{\"code\":200,\"results\":{\"recComics\":{\"list\":[\(paid),\(free)]},\"rankDayComics\":{\"list\":[{\"comic\":\(paid)}]}," +
+            "\"banners\":[{\"type\":1,\"cover\":\"/a.jpg\",\"comic\":\(paid)},{\"type\":1,\"cover\":\"/b.jpg\",\"comic\":\(free)}]}}"
+        let detail = "{\"code\":200,\"results\":{\"comic\":\(paid),\"groups\":{\"default\":{}}}}"
+        let list = "{\"code\":200,\"results\":{\"list\":[\(paid),\(comic),\(free)],\"total\":3,\"offset\":0,\"limit\":30}}"
+        let fixture = CopyFixture { request, _ in
+            let path = request.url!.path
+            if path == "/api/v3/h5/homeIndex" { return .json(home) }
+            return .json(path.contains("/comic2/") ? detail : list)
+        }
+        let client = fixture.client
+        let feeds = try await client.home()
+        #expect(feeds.sections.map(\.id) == ["recComics"])
+        #expect(feeds.sections.first?.entries.map(\.id) == ["free"])
+        #expect(feeds.features.map(\.comic.id) == ["free"])
+        #expect(feeds.rankings.isEmpty)
+        let queries: [CopyQuery] = [.init(), .init(kind: "finished"), .init(kind: "ranking"), .init(kind: "topic", topic: "t"), .init(kind: "search", keyword: "q")]
+        for query in queries {
+            let page = try await client.catalog(query, page: 1)
+            #expect(page.entries.map(\.id) == ["fixture-comic", "free"])
+            #expect(!page.more)
+        }
+        do {
+            _ = try await client.details(key: "paid")
+            Issue.record("A paid comic was opened")
+        } catch {
+            #expect(error.localizedDescription == "付费漫画已屏蔽")
+        }
+        // Listing requests ask the service for free comics only.
+        let lists = fixture.requests.compactMap(\.url).filter {
+            $0.path != "/api/v3/h5/homeIndex" && !$0.path.contains("/comic2/") && $0.path != "/api/kb/web/searchcl/comics"
+        }
+        #expect(lists.count == 4)
+        #expect(lists.allSatisfy { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "free_type" && $0.value == "1" } == true })
+    }
+
+    @Test func blockedCopyDomainUsesCopysOtherDomainForFilteredListsAndKeepsThatRoute() async throws {
+        let list = "{\"code\":200,\"results\":{\"list\":[\(comic)],\"total\":1}}"
+        let fixture = CopyFixture { _, backup in backup ? .json(list) : .failure(URLError(.secureConnectionFailed)) }
+        let client = CopyClient(session: fixture.session, browseBase: fixture.browse, contentBase: fixture.content,
+            searchBases: [fixture.content], browseAlternates: [fixture.content])
+        #expect(try await client.catalog(CopyQuery(kind: "finished"), page: 1).entries.map(\.id) == ["fixture-comic"])
+        #expect(try await client.catalog(CopyQuery(kind: "ranking"), page: 1).entries.map(\.id) == ["fixture-comic"])
+        #expect(fixture.requests.filter { $0.url?.host == fixture.browse.host }.count == 2)
+        let served = fixture.requests.filter { $0.url?.host == fixture.content.host }
+        #expect(served.count == 2)
+        // Copy's other domain answers with Copy's own API identity and keeps the filter.
+        #expect(served.allSatisfy { $0.value(forHTTPHeaderField: "version") == "3.0.9" })
+        #expect(URLComponents(url: try #require(served.first?.url), resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "top" && $0.value == "finish" } == true)
+    }
+
+    @Test func anEmptyTopicListIsAFailureToRetryRatherThanABlankPage() async {
+        let fixture = CopyFixture { _, _ in .json(#"{"code":200,"results":{"list":[],"total":0}}"#) }
+        do {
+            _ = try await fixture.client.topics(page: 1)
+            Issue.record("An empty topic list was shown as a page")
+        } catch {
+            #expect(error.localizedDescription.contains("专题"))
+        }
+    }
+
+    @Test func rebuiltHomeReportsOnlyTheShelvesThatFailed() async throws {
+        let catalog = "{\"code\":200,\"results\":{\"list\":[\(comic)],\"total\":1}}"
+        let fixture = CopyFixture { request, _ in
+            let path = request.url!.path
+            if path == "/api/v3/h5/homeIndex" { return .json(#"{"code":200,"results":{}}"#) }
+            return path == "/api/v3/topics" ? .status(503) : .json(catalog)
+        }
+        let home = try await fixture.client.home()
+        #expect(home.sections.count == 3)
+        #expect(home.notice == "部分栏目加载失败。")
+        #expect(home.diagnostics?.contains("精选专题") == true)
     }
 
     @Test func realToLoveVolumesKeepTheirSeriesAndNumericReaderOrder() async throws {
@@ -250,7 +317,8 @@ struct CopySourceClientTests {
         let fixture = CopyFixture { _, backup in backup ? .json(body) : .failure(URLError(.timedOut)) }
         let page = try await fixture.client.catalog(CopyQuery(kind: "search", keyword: " 金牌得主 & 漫画 "), page: 2)
         #expect(page.entries.count == 1 && page.more)
-        #expect(fixture.requests.count == 3)
+        // A stalled address is left for the next one instead of being waited on twice.
+        #expect(fixture.requests.count == 2)
         let request = try #require(fixture.requests.last)
         #expect(request.url?.host == fixture.content.host)
         #expect(request.url?.path == "/api/kb/web/searchcl/comics")
@@ -374,9 +442,8 @@ struct CopySourceClientTests {
         let home = try await fixture.client.home()
         #expect(home.sections.map(\.id) == ["newComics", "hotComics", "finishComics"])
         #expect(home.rankings.map(\.period) == ["day", "week", "month"])
-        #expect(home.diagnostics?.contains("空对象") == true)
-        #expect(home.notice != nil)
-        #expect(fixture.requests.count == 10)
+        #expect(home.notice == nil && home.diagnostics == nil)
+        #expect(fixture.requests.count == 9)
     }
 
     @Test func failureOfAllFeedsCannotBecomeBlankSuccess() async {

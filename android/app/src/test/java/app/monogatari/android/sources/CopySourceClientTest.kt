@@ -110,42 +110,140 @@ class CopySourceClientTest {
         } }
     }
 
-    @Test fun capturedPrimaryAndAlternateHomePayloadsRetainBannersAndRecommendations() {
+    @Test fun capturedPrimaryHomePayloadRetainsBannersAndRecommendations() {
         MockWebServer().use { server ->
-            val client = client(server)
-            for (name in listOf("primary", "alternate")) {
-                val fixture = javaClass.getResourceAsStream("/copy-home-$name.json")!!.bufferedReader().use { it.readText() }
-                val home = client.parseHome(JSONObject(fixture).getJSONObject("results"))
-                assertEquals(5, home.features.size)
-                assertTrue(home.sections.any { it.id == "recComics" })
-                assertTrue(home.topics.isNotEmpty())
-                assertTrue(home.rankings.isNotEmpty())
-                assertNull(home.notice)
-                if (name == "primary") assertEquals(5, home.sections.size)
-                else assertEquals("本周更新", home.sections.first { it.id == "hotComics" }.title)
-            }
+            val fixture = javaClass.getResourceAsStream("/copy-home-primary.json")!!.bufferedReader().use { it.readText() }
+            val home = client(server).parseHome(JSONObject(fixture).getJSONObject("results"))
+            assertEquals(5, home.features.size)
+            assertTrue(home.sections.any { it.id == "recComics" })
+            assertTrue(home.topics.isNotEmpty())
+            assertTrue(home.rankings.isNotEmpty())
+            assertNull(home.notice)
+            assertEquals(5, home.sections.size)
         }
     }
 
-    @Test fun persistentlyEmptyPrimaryUsesARealAlternateHomepageAndCompletesItsMissingShelves() {
+    @Test fun persistentlyEmptyPrimaryRebuildsFromCopyListsWithoutTheBackupHomepage() {
         MockWebServer().use { primary -> MockWebServer().use { content ->
-            val fixture = javaClass.getResourceAsStream("/copy-home-alternate.json")!!.bufferedReader().use { it.readText() }
             primary.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest) = response(if (request.requestUrl!!.encodedPath.endsWith("homeIndex"))
                     """{"code":200,"results":{"recComics":{"list":[]},"banners":[]}}"""
                     else """{"code":200,"results":{"list":[${comic("feed")}],"total":1}}""")
             }
-            content.enqueue(response(fixture))
             val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, primary.url("/").toString())
             val home = CopySourceClient(source, OkHttpClient(), primary.url("/").toString(), contentAddress = content.url("/").toString()).home()
-            assertEquals(5, home.features.size)
-            assertTrue(home.sections.any { it.id == "newComics" } && home.sections.any { it.id == "finishComics" })
-            assertEquals(setOf("day", "week", "month"), home.rankings.map { it.period }.toSet())
-            assertTrue(home.diagnostics!!.contains("条目0"))
-            assertEquals("已使用备用首页接口。", home.notice)
-            assertEquals(1, content.requestCount)
+            assertEquals(listOf("newComics", "hotComics", "finishComics"), home.sections.map { it.id })
+            assertEquals(listOf("day", "week", "month"), home.rankings.map { it.period })
+            assertNull(home.notice); assertNull(home.diagnostics)
+            assertEquals(0, content.requestCount)
             assertEquals(9, primary.requestCount)
         } }
+    }
+
+    @Test fun paidComicsNeverReachFeedsSearchOrDetails() {
+        val paid = """{"name":"Paid","path_word":"paid","free_type":{"display":"付費","value":2}}"""
+        val free = """{"name":"Free","path_word":"free","free_type":{"display":"免費","value":1}}"""
+        MockWebServer().use { server ->
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest) = response(when (request.requestUrl!!.encodedPath) {
+                    "/api/v3/h5/homeIndex" -> """{"code":200,"results":{"recComics":{"list":[$paid,$free]},"rankDayComics":{"list":[{"comic":$paid}]},
+                        "banners":[{"type":1,"cover":"/a.jpg","comic":$paid},{"type":1,"cover":"/b.jpg","comic":$free}]}}"""
+                    "/api/v3/comic2/paid" -> """{"code":200,"results":{"comic":$paid,"groups":{"default":{"name":"默認"}}}}"""
+                    else -> """{"code":200,"results":{"list":[$paid,${comic("one")},$free],"total":3,"offset":0,"limit":30}}"""
+                })
+            }
+            val client = client(server)
+            val home = client.home()
+            assertEquals(listOf("free"), home.sections.single().entries.map { it.key })
+            assertEquals(listOf("free"), home.features.map { it.manga.key })
+            assertTrue(home.rankings.isEmpty())
+            for (query in listOf(CopyQuery(), CopyQuery(kind = "finished"), CopyQuery(kind = "ranking"), CopyQuery(kind = "topic", topic = "t"), CopyQuery(kind = "search", keyword = "q"))) {
+                val page = client.catalog(query)
+                assertEquals(listOf("one", "free"), page.entries.map { it.key })
+                assertFalse(page.more)
+            }
+            val failure = runCatching { client.details(Manga("paid", "copy-fixture", "Paid")) }.exceptionOrNull()
+            assertEquals("付费漫画已屏蔽", failure?.message)
+            var listRequests = 0
+            repeat(server.requestCount) {
+                val url = server.takeRequest().requestUrl!!
+                if (url.encodedPath != "/api/v3/h5/homeIndex" && !url.encodedPath.startsWith("/api/v3/comic2")) {
+                    listRequests++
+                    // Listing and search requests ask the service for free comics only.
+                    if (url.encodedPath != "/api/kb/web/searchcl/comics") assertEquals("1", url.queryParameter("free_type"))
+                }
+            }
+            assertEquals(5, listRequests)
+        }
+    }
+    @Test fun blockedCopyDomainUsesCopysOtherDomainWithFiltersAndKeepsThatRoute() {
+        MockWebServer().use { primary -> MockWebServer().use { alternate -> MockWebServer().use { content ->
+            val blocked = AtomicInteger()
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                if (chain.request().url.port == primary.port) { blocked.incrementAndGet(); throw SSLHandshakeException("Connection reset") }
+                chain.proceed(chain.request())
+            }.build()
+            repeat(2) { alternate.enqueue(response("""{"code":200,"results":{"list":[${comic("done")}],"total":1}}""")) }
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, primary.url("/").toString())
+            val client = CopySourceClient(source, http, primary.url("/").toString(), contentAddress = content.url("/").toString(),
+                apiAlternates = listOf(alternate.url("/").toString()))
+            assertEquals("done", client.catalog(CopyQuery(kind = "finished")).entries.single().key)
+            assertEquals("done", client.catalog(CopyQuery(kind = "ranking")).entries.single().key)
+            assertEquals(2, blocked.get())
+            assertEquals("finish", alternate.takeRequest().requestUrl!!.queryParameter("top"))
+            assertEquals("/api/v3/ranks", alternate.takeRequest().requestUrl!!.encodedPath)
+            assertEquals(0, content.requestCount)
+        } } }
+    }
+    @Test fun aRouteThatJustFailedIsNotWaitedOnByTheNextRequest() {
+        MockWebServer().use { browse -> MockWebServer().use { content ->
+            var clock = 100_000L
+            val blocked = AtomicInteger()
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                if (chain.request().url.port == browse.port) { blocked.incrementAndGet(); throw SSLHandshakeException("Connection reset") }
+                chain.proceed(chain.request())
+            }.build()
+            repeat(3) { content.enqueue(response("""{"code":200,"results":{"list":[${comic("one")}],"total":1}}""")) }
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, browse.url("/").toString())
+            val client = CopySourceClient(source, http, browse.url("/").toString(), contentAddress = content.url("/").toString(), now = { clock })
+            client.catalog(CopyQuery()); client.catalog(CopyQuery(kind = "ranking"))
+            assertEquals(2, blocked.get())
+            clock += 120_001
+            client.catalog(CopyQuery())
+            assertEquals(4, blocked.get())
+            assertEquals(3, content.requestCount)
+        } }
+    }
+    @Test fun copyOnlyListsGetOneMoreQuickRoundAfterResets() {
+        MockWebServer().use { browse -> MockWebServer().use { content ->
+            val blocked = AtomicInteger()
+            val waits = mutableListOf<Long>()
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                if (chain.request().url.port == browse.port && blocked.incrementAndGet() <= 2) throw java.net.SocketException("Connection reset")
+                chain.proceed(chain.request())
+            }.build()
+            browse.enqueue(response("""{"code":200,"results":{"list":[${comic("done")}],"total":1}}"""))
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, browse.url("/").toString())
+            val client = CopySourceClient(source, http, browse.url("/").toString(), contentAddress = content.url("/").toString(), pause = { waits += it })
+            assertEquals("done", client.catalog(CopyQuery(kind = "finished")).entries.single().key)
+            assertEquals(listOf(800L), waits)
+            assertEquals(0, content.requestCount)
+        } }
+    }
+    @Test fun anEmptyTopicListIsAFailureToRetryRatherThanABlankPage() {
+        MockWebServer().use { server ->
+            server.enqueue(response("""{"code":200,"results":{"list":[],"total":0}}"""))
+            val failure = runCatching { client(server).topics(1) }.exceptionOrNull()
+            assertTrue(failure!!.message!!.contains("专题"))
+        }
+    }
+    @Test fun oneMalformedEntryDoesNotDiscardTheRestOfThePage() {
+        MockWebServer().use { server ->
+            server.enqueue(response("""{"code":200,"results":{"list":[{"name":"No key"},${comic("one")}],"total":2,"offset":0,"limit":30}}"""))
+            val page = client(server).catalog(CopyQuery())
+            assertEquals(listOf("one"), page.entries.map { it.key })
+            assertFalse(page.more)
+        }
     }
     @Test fun realToLoveVolumesKeepProviderSeriesOrderAndReaderSequence() {
         MockWebServer().use { server ->
@@ -179,7 +277,8 @@ class CopySourceClientTest {
                 searchAddresses = listOf(primary.url("/").toString(), backup.url("/").toString()))
             val page = client.catalog(CopyQuery(kind = "search", keyword = " 金牌得主 & 漫画 "), 2)
             assertTrue(page.more)
-            assertEquals(2, calls.get())
+            // A stalled address is left for the next one instead of being waited on twice.
+            assertEquals(1, calls.get())
             val request = backup.takeRequest()
             assertEquals("/api/kb/web/searchcl/comics", request.requestUrl!!.encodedPath)
             assertEquals("金牌得主 & 漫画", request.requestUrl!!.queryParameter("q"))
@@ -295,7 +394,7 @@ class CopySourceClientTest {
                     val path = request.requestUrl!!.encodedPath
                     return when (path) {
                         "/api/v3/h5/homeIndex" -> response("""{"code":200,"results":{}}""")
-                        "/api/v3/topics" -> response("""{"code":200,"results":{"list":[],"total":0}}""")
+                        "/api/v3/topics" -> response("""{"code":200,"results":{"list":[{"title":"Topic","path_word":"topic-one"}],"total":1}}""")
                         else -> response("""{"code":200,"results":{"list":[${comic("recovered")}],"total":1}}""")
                     }
                 }
@@ -303,9 +402,23 @@ class CopySourceClientTest {
             val home = client(server).home()
             assertEquals(listOf("newComics", "hotComics", "finishComics"), home.sections.map { it.id })
             assertEquals(listOf("day", "week", "month"), home.rankings.map { it.period })
-            assertTrue(home.diagnostics!!.contains("空对象"))
-            assertNotNull(home.notice)
+            assertNull(home.notice); assertNull(home.diagnostics)
             assertEquals(9, server.requestCount)
+        }
+    }
+    @Test fun rebuiltHomeReportsOnlyTheShelvesThatFailed() {
+        MockWebServer().use { server ->
+            server.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest): MockResponse = when (request.requestUrl!!.encodedPath) {
+                    "/api/v3/h5/homeIndex" -> response("""{"code":200,"results":{}}""")
+                    "/api/v3/topics" -> MockResponse().setResponseCode(503).setBody("{}")
+                    else -> response("""{"code":200,"results":{"list":[${comic("recovered")}],"total":1}}""")
+                }
+            }
+            val home = client(server).home()
+            assertEquals(3, home.sections.size)
+            assertEquals("部分栏目加载失败。", home.notice)
+            assertTrue(home.diagnostics!!.contains("精选专题"))
         }
     }
     @Test fun unavailableHomeAndCatalogShowAnErrorInsteadOfAnEmptyPage() {

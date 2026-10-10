@@ -372,6 +372,7 @@ private fun fullSizeImage(url: String): String = url.replace(Regex("""(\.(?:jpe?
         keyword = memory.submitted, theme = memory.theme, order = if (mode == "newest") "-datetime_created" else memory.order,
         status = memory.status, rankPeriod = memory.period, audience = memory.audience)
     fun load(append: Boolean = false) {
+        if (append && memory.work.task?.isActive == true) return
         val captured = query()
         val page = if (append) memory.page + 1 else 1
         memory.lastAppend = append
@@ -405,6 +406,13 @@ private fun fullSizeImage(url: String): String = url.replace(Regex("""(\.(?:jpe?
         else if (!memory.initialized && mode != "search") load()
     }
     DisposableEffect(memory) { onDispose { memory.work.cancel() } }
+    val grid = rememberLazyGridState()
+    // The next page loads as the end of the list comes near; a page that failed waits for the user to retry.
+    LaunchedEffect(grid, memory, disabled) {
+        if (disabled) return@LaunchedEffect
+        snapshotFlow { grid.layoutInfo.let { info -> info.totalItemsCount to ((info.visibleItemsInfo.lastOrNull()?.index ?: -1) >= info.totalItemsCount - 6) } }
+            .collect { (_, near) -> if (near && memory.initialized && memory.more && !memory.busy && memory.error == null) load(true) }
+    }
     Column(Modifier.fillMaxSize()) {
         PageTitle(title, vm::back, actions = {
             if (mode !in setOf("topic", "topics", "ranking", "search")) IconButton({ showCategories = true }) { Icon(Icons.Outlined.FilterList, tr("FILTERS"), tint = Pink) }
@@ -432,15 +440,16 @@ private fun fullSizeImage(url: String): String = url.replace(Regex("""(\.(?:jpe?
                 }
             }
         }
-        if (memory.busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp))
-        memory.error?.let { CopyError(it, { load(append = memory.lastAppend) }) }
+        // Progress and failures of a next page show at the end of the list, where the reader is.
+        if (memory.busy && !memory.lastAppend) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp))
+        memory.error?.takeIf { !memory.lastAppend }?.let { CopyError(it, { load() }) }
         when (mode) {
             // One column on phones; tablets fit two or more cards per row.
-            "topics" -> LazyVerticalGrid(GridCells.Adaptive(360.dp), Modifier.weight(1f), contentPadding = PaddingValues(vertical = 8.dp)) {
+            "topics" -> LazyVerticalGrid(GridCells.Adaptive(360.dp), Modifier.weight(1f), grid, contentPadding = PaddingValues(vertical = 8.dp)) {
                 items(memory.topics, key = { it.key }) { topic -> CopyTopicCard(topic) { openCopy(vm, "topic:${topic.key}") } }
-                item(span = { GridItemSpan(maxLineSpan) }) { CopyLoadMore(memory.more, memory.busy) { load(true) } }
+                item(span = { GridItemSpan(maxLineSpan) }) { CopyLoadMore(memory) { load(true) } }
             }
-            "topic" -> LazyVerticalGrid(GridCells.Adaptive(104.dp), Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+            "topic" -> LazyVerticalGrid(GridCells.Adaptive(104.dp), Modifier.weight(1f), grid, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                 memory.topic?.let { topic ->
                     item(span = { GridItemSpan(maxLineSpan) }) { Column(Modifier.widthIn(max = ReadableWidth)) {
@@ -453,7 +462,7 @@ private fun fullSizeImage(url: String): String = url.replace(Regex("""(\.(?:jpe?
                     } }
                 }
                 items(memory.entries, key = { it.id }) { manga -> CopyBookCard(manga, vm) }
-                item(span = { GridItemSpan(maxLineSpan) }) { CopyLoadMore(memory.more, memory.busy) { load(true) } }
+                item(span = { GridItemSpan(maxLineSpan) }) { CopyLoadMore(memory) { load(true) } }
             }
             else -> {
                 if (!memory.busy && memory.error == null && memory.entries.isEmpty()) {
@@ -461,14 +470,14 @@ private fun fullSizeImage(url: String): String = url.replace(Regex("""(\.(?:jpe?
                     else Text(pt("No comics found.", "没有找到符合条件的漫画"), Modifier.padding(20.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 // A single ranked list on phones; tablets read the chart in two or more columns.
-                if (mode == "ranking") LazyVerticalGrid(GridCells.Adaptive(340.dp), Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
+                if (mode == "ranking") LazyVerticalGrid(GridCells.Adaptive(340.dp), Modifier.weight(1f), grid, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     itemsIndexed(memory.entries, key = { _, manga -> manga.id }) { index, manga -> CopyRankRow(manga, index + 1, vm, Modifier.fillMaxWidth()) }
-                    item(span = { GridItemSpan(maxLineSpan) }) { CopyLoadMore(memory.more, memory.busy) { load(true) } }
-                } else LazyVerticalGrid(GridCells.Adaptive(104.dp), Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+                    item(span = { GridItemSpan(maxLineSpan) }) { CopyLoadMore(memory) { load(true) } }
+                } else LazyVerticalGrid(GridCells.Adaptive(104.dp), Modifier.weight(1f), grid, contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                     items(memory.entries, key = { it.id }) { manga -> CopyBookCard(manga, vm, showLatest = mode == "updates" || mode == "newest") }
-                    item(span = { GridItemSpan(maxLineSpan) }) { CopyLoadMore(memory.more, memory.busy) { load(true) } }
+                    item(span = { GridItemSpan(maxLineSpan) }) { CopyLoadMore(memory) { load(true) } }
                 }
             }
         }
@@ -496,8 +505,15 @@ private fun fullSizeImage(url: String): String = url.replace(Regex("""(\.(?:jpe?
         } }
     }
 }
-@Composable private fun CopyLoadMore(more: Boolean, busy: Boolean, next: () -> Unit) {
-    if (more) TextButton(next, Modifier.fillMaxWidth().padding(vertical = 12.dp), enabled = !busy) { Text(pt("Load more", "加载更多")) }
+@Composable private fun CopyLoadMore(memory: CopyCatalogMemory, next: () -> Unit) {
+    val failed = memory.error?.takeIf { memory.lastAppend }
+    when {
+        failed != null -> CopyError(failed, next)
+        memory.busy && memory.lastAppend -> Box(Modifier.fillMaxWidth().padding(vertical = 18.dp), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(Modifier.size(22.dp), color = Pink, strokeWidth = 2.dp)
+        }
+        memory.more -> TextButton(next, Modifier.fillMaxWidth().padding(vertical = 12.dp), enabled = !memory.busy) { Text(pt("Load more", "加载更多")) }
+    }
 }
 @Composable private fun CopyError(message: String, retry: () -> Unit) {
     var expanded by remember(message) { mutableStateOf(false) }

@@ -114,6 +114,11 @@ final class CopyCatalogModel: ObservableObject {
         }
     }
 
+    /// Continues the list on its own; a page that failed waits for the user to retry.
+    func loadMoreIfNeeded() {
+        if initialized && more && !busy && error == nil { load(append: true) }
+    }
+
     private func merged(_ old: [CopyComic], _ new: [CopyComic]) -> [CopyComic] {
         var seen = Set<String>()
         return (old + new).filter { seen.insert($0.id).inserted }
@@ -151,19 +156,26 @@ struct CopyCatalogView: View {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if showsSearch { searchField }
                 filterBar
-                if model.busy {
+                // Progress and failures of a next page show at the end of the list, where the reader is.
+                if model.busy && !model.lastAppend {
                     ProgressView().frame(maxWidth: .infinity).padding(.vertical, 8)
                 }
-                if let error = model.error {
-                    CopyErrorView(message: error) { model.load(append: model.lastAppend) }
+                if let error = model.error, !model.lastAppend {
+                    CopyErrorView(message: error) { model.load() }
                 }
                 content
-                if model.more {
+                if let error = model.error, model.lastAppend {
+                    CopyErrorView(message: error) { model.load(append: true) }
+                } else if model.busy && model.lastAppend {
+                    ProgressView().frame(maxWidth: .infinity).padding(.vertical, 14)
+                } else if model.more {
                     Button("加载更多") { model.load(append: true) }
                         .disabled(model.busy)
                         .foregroundColor(bookstorePink)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
+                        // The lazy stack creates this row as the end of the list comes near.
+                        .onAppear { model.loadMoreIfNeeded() }
                 }
             }
             .padding(.bottom, 24)
