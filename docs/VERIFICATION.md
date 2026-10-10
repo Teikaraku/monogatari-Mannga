@@ -6,7 +6,8 @@
 | 单元测试 | 237 项通过，没有失败、错误或跳过。新增覆盖首页空响应、异常条目、独立目录恢复、临时 TLS 重试和备用服务。 |
 | 代码检查 | 没有错误，193 项警告。 |
 | 正式安装包 | 包名 `app.monogatari.android`，显示名“物语”，使用物语的正式签名，不可调试。 |
-| iPhone 编译 | 本次修复在 [GitHub Actions](https://github.com/Teikaraku/monogatari-reader/actions/runs/38043689291) 编译，并执行首页和连接处理测试；结果以该次运行为准。 |
+| iPhone 编译 | [GitHub Actions](https://github.com/Teikaraku/monogatari-reader/actions/runs/38044240158) 编译、打包成功，生成未签名 IPA。 |
+| iPhone 本次测试 | 在 iOS 模拟器执行 13 项首页和连接处理测试，全部通过。未运行其他 iOS 测试，也未在用户手机网络上验证。 |
 
 ## 实际页面检查
 
@@ -19,9 +20,17 @@
 本次网络修复正式安装包 `monogatari-android-0.9-network-fix.apk` 的 SHA-256：
 
 ```text
-3ed4b4a40a43a16885ad93b6140de19f0ab19715d76e87f1243f7b6bc646722a
+15419873c85f5b82e1752c358827eb7df212f020b72b0b5589601237b2b9420e
 ```
 
 模型附件的校验值见 `android/asset-manifest.json`。
 
 之前的正式包校验值为 `4248f8bf04832e3e3de828c291601f15ad00e624e9c8d51a841974da560eb294`；它不包含本次网络修复。两份安装包使用同一正式签名和包名，可以覆盖安装。
+
+iPhone 修复包 `monogatari-ios-0.9-network-fix-unsigned.ipa` 的 SHA-256：
+
+```text
+e836e341980bffd131b342dabf9aa24863f7b59e06a0c1d02aa4c55cc442972e
+```
+
+该包来自上述运行的 [monogatari-ios 附件](https://github.com/Teikaraku/monogatari-reader/actions/runs/38044240158/artifacts/11666792673)，已核对下载压缩包的校验值。安装到普通 iPhone 时仍需要签名。
