@@ -135,6 +135,7 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
                 .apply { if (url.queryParameter("platform") == null) addQueryParameter("platform", "3") }.build()
             try { return result(alternate, label, true) }
             catch (secondary: Exception) {
+                if (Thread.currentThread().isInterrupted || secondary is CopyRateLimitFailure) throw secondary
                 throw IOException(connectionFailure(url, label, failure) + "\n备用 HTTPS 接口：" +
                     connectionFailure(alternate, label, secondary), secondary)
             }

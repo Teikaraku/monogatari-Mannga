@@ -417,6 +417,19 @@ struct CopySourceClientTests {
         }
     }
 
+    @Test func backupRateLimitKeepsItsWaitingTimeAndStopsFurtherRecovery() async {
+        let fixture = CopyFixture { _, backup in
+            backup ? .response(429, "{}", ["Retry-After": "90"]) : .failure(URLError(.secureConnectionFailed))
+        }
+        do {
+            _ = try await fixture.client.catalog(.init(), page: 1)
+            Issue.record("The backup's rate limit must propagate")
+        } catch CopyError.rateLimited(let until) {
+            #expect(until.timeIntervalSinceNow > 85)
+            #expect(fixture.requests.filter { $0.url?.host == fixture.content.host }.count == 1)
+        } catch { Issue.record(error) }
+    }
+
     @Test func bothTlsFailuresRemainVisible() async {
         let fixture = CopyFixture { _, _ in .failure(URLError(.serverCertificateUntrusted)) }
         do {

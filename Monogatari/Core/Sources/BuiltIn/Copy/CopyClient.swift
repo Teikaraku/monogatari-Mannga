@@ -250,6 +250,8 @@ struct CopyClient: Sendable {
                 return try await result(alternate.url!, label: label, content: true)
             } catch let secondary {
                 try Task.checkCancellation()
+                if secondary is CancellationError { throw secondary }
+                if case CopyError.rateLimited = secondary { throw secondary }
                 throw CopyError.message(connectionFailure(url, label: label, error: error) + "\n备用 HTTPS 接口：" +
                     connectionFailure(alternate.url!, label: label, error: secondary))
             }

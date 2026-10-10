@@ -387,6 +387,20 @@ class CopySourceClientTest {
         } }
     }
 
+    @Test fun backupRateLimitKeepsItsWaitingTimeAndStopsFurtherRecovery() {
+        MockWebServer().use { browse -> MockWebServer().use { content ->
+            content.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "90").setBody("{}"))
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                if (chain.request().url.port == browse.port) throw SSLHandshakeException("fixture TLS failure")
+                chain.proceed(chain.request())
+            }.build()
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, browse.url("/").toString())
+            val client = CopySourceClient(source, http, browse.url("/").toString(), contentAddress = content.url("/").toString())
+            assertTrue(runCatching { client.catalog(CopyQuery()) }.exceptionOrNull() is CopyRateLimitFailure)
+            assertEquals(1, content.requestCount)
+        } }
+    }
+
     @Test fun twoTlsFailuresRemainVisibleAndDoNotDisableCertificateVerification() {
         MockWebServer().use { browse -> MockWebServer().use { content ->
             val http = OkHttpClient.Builder().addInterceptor { throw SSLHandshakeException("fixture TLS failure") }.build()
