@@ -66,7 +66,7 @@ private fun catalog(state: AppState) = state.sourceLists.flatMap { it.entries }.
         PageTitle(if (vm.screen == "sourceManager") pt("Sources", "图源管理") else tr("BROWSE"), back = if (vm.screen == "sourceManager") vm::back else null,
             actions = { IconButton({ edit = !edit }) { Icon(if (edit) Icons.Outlined.Done else Icons.Outlined.Edit, tr(if (edit) "DONE" else "EDIT_SOURCES")) }; IconButton({ vm.navigate("addSources") }) { Icon(Icons.Outlined.Add, tr("ADD_SOURCE"), tint = Pink) } })
         SearchField(query, tr("SEARCH")) { query = it }
-        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(16.dp)) {
+        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 16.dp + centeredInset(DetailWidth), vertical = 16.dp)) {
             if (updates.isNotEmpty()) {
                 item { Row(verticalAlignment = Alignment.CenterVertically) { Text(tr("UPDATES"), Modifier.weight(1f), style = MaterialTheme.typography.titleLarge); TextButton(::updateAll, enabled = !vm.busy) { Text(tr("BUTTON_UPDATE") + " · " + tr("ALL")) } } }
                 items(updates.filter { it.name.contains(query, true) }, key = { "update:${it.id}" }) { SourcePackageRow(vm, it) }
@@ -85,13 +85,21 @@ private fun catalog(state: AppState) = state.sourceLists.flatMap { it.entries }.
                             if (source.id in disabled) Text(tr("DISABLED"), style = MaterialTheme.typography.labelSmall)
                             if (installed != null && entry == null) Text(tr("MISSING_SOURCE_LIST"), style = MaterialTheme.typography.labelSmall)
                         }
-                        Box { IconButton({ menu = true }) { Icon(Icons.Outlined.MoreVert, tr("EDIT")) }; CallerContextDropdownMenu(menu, { menu = false }) {
-                            DropdownMenuItem({ Text(tr(if (source.id in pinned) "UNPIN" else "PIN")) }, { menu = false; put("Browse.pinnedList", if (source.id in pinned) pinned - source.id else pinned + source.id) })
-                            DropdownMenuItem({ Text(tr(if (source.id in disabled) "ENABLE" else "DISABLE")) }, { menu = false; put("Browse.disabledSources", if (source.id in disabled) disabled - source.id else disabled + source.id) })
-                            if (source.id in pinned) for (direction in listOf(-1, 1)) DropdownMenuItem({ Icon(if (direction < 0) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown, tr("REORDER")) }, { menu = false; val next = pinned.toMutableList(); val old = next.indexOf(source.id); val index = old + direction; if (index in next.indices) { next.removeAt(old); next.add(index, source.id); put("Browse.pinnedList", next) } }, enabled = pinned.indexOf(source.id) + direction in pinned.indices)
-                            DropdownMenuItem({ Text(tr("SOURCE_SETTINGS")) }, { menu = false; vm.navigate("sourceSettings", source.id) })
-                            if (source.type != "local") DropdownMenuItem({ Text(tr("UNINSTALL"), color = MaterialTheme.colorScheme.error) }, { menu = false; remove = source })
-                        } }
+                        Box { IconButton({ menu = true }) { Icon(Icons.Outlined.MoreVert, tr("EDIT")) }
+                            // Order, then pin / disable, then the destructive uninstall, as in the iOS source context menu.
+                            fun move(direction: Int) { val next = pinned.toMutableList(); val old = next.indexOf(source.id); val index = old + direction
+                                if (index in next.indices) { next.removeAt(old); next.add(index, source.id); put("Browse.pinnedList", next) } }
+                            NativeMenu(menu, { menu = false }, listOf(
+                                if (source.id in pinned) listOf(
+                                    MenuAction(pt("Move up", "上移"), Icons.Outlined.KeyboardArrowUp, enabled = pinned.indexOf(source.id) > 0) { move(-1) },
+                                    MenuAction(pt("Move down", "下移"), Icons.Outlined.KeyboardArrowDown, enabled = pinned.indexOf(source.id) < pinned.lastIndex) { move(1) }) else emptyList(),
+                                listOf(
+                                    MenuAction(tr(if (source.id in pinned) "UNPIN" else "PIN"), Icons.Outlined.PushPin) { put("Browse.pinnedList", if (source.id in pinned) pinned - source.id else pinned + source.id) },
+                                    MenuAction(tr(if (source.id in disabled) "ENABLE" else "DISABLE"), if (source.id in disabled) Icons.Outlined.PlayArrow else Icons.Outlined.Pause) {
+                                        put("Browse.disabledSources", if (source.id in disabled) disabled - source.id else disabled + source.id) },
+                                    MenuAction(tr("SOURCE_SETTINGS"), Icons.Outlined.Settings) { vm.navigate("sourceSettings", source.id) }),
+                                if (source.type != "local") listOf(MenuAction(tr("UNINSTALL"), Icons.Outlined.DeleteOutline, destructive = true) { remove = source }) else emptyList()))
+                        }
                     }
                     HorizontalDivider()
                 }
@@ -136,7 +144,7 @@ private fun catalog(state: AppState) = state.sourceLists.flatMap { it.entries }.
     Column(Modifier.fillMaxSize()) {
         PageTitle(tr("ADD_SOURCE"), vm::back, actions = { IconButton({ filter = true }) { Icon(Icons.Outlined.FilterList, tr("FILTERS")) }; IconButton({ vm.run { val fresh = withContext(Dispatchers.IO) { state.sourceLists.map { vm.repo.client.sourceList(it.url) } }; vm.repo.change { it.copy(sourceLists = fresh) } } }, enabled = !vm.busy) { Icon(Icons.Outlined.Refresh, tr("UPDATES")) } })
         SearchField(query, tr("SEARCH")) { query = it }
-        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(16.dp)) {
+        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 16.dp + centeredInset(DetailWidth), vertical = 16.dp)) {
             item { Text(tr("BUILT_IN_SOURCES"), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
             if (query.isEmpty() || Localization.string(vm.repo.context, "LOCAL_FILES").contains(query, true)) item { SettingRow(tr("LOCAL_FILES"), Icons.Outlined.Folder, onClick = import) }
             if ("拷贝漫画".contains(query, true) || "copy".contains(query, true)) item { SettingRow("拷贝漫画", Icons.Outlined.MenuBook,

@@ -34,7 +34,7 @@ private val otherSettings = listOf(
     var query by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
     val schema = remember { JSONArray(vm.repo.context.assets.open("ios/settings-schema.json").bufferedReader().use { it.readText() }).objects() }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant)) {
-        PageTitle(tr("SETTINGS")); SearchField(query, tr("SEARCH")) { query = it }
+        PageTitle(tr("SETTINGS"), contentWidth = ReadableWidth); SearchField(query, tr("SEARCH"), modifier = Modifier.readableWidth()) { query = it }
         LazyColumn {
             item { SettingGroup { SettingRow(tr("INCOGNITO_MODE"), subtitle = tr("INCOGNITO_MODE_TEXT"), trailing = {
                 Switch(state.preferences.incognito, { checked -> vm.run { vm.repo.settings.put("General.incognitoMode", checked) } })
@@ -59,7 +59,7 @@ private val otherSettings = listOf(
         return
     }
     Column {
-        PageTitle(tr("ABOUT"), vm::back)
+        PageTitle(tr("ABOUT"), vm::back, contentWidth = ReadableWidth)
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant).verticalScroll(rememberScrollState())) {
             SettingGroup { SettingRow(tr("VERSION"), value = app.monogatari.android.BuildConfig.VERSION_NAME) }
             SettingGroup {
@@ -79,9 +79,14 @@ fun platformText(vm: MonogatariViewModel, english: String, chinese: String) = if
         else LazyColumn { items(categories, key = { it }) { category -> SettingRow(category, value = state.manga.count { category in it.categories && it.inLibrary }.toString(),
             onClick = { editing = category; name = category }, trailing = { Row {
                 fun move(delta: Int) = vm.run { vm.repo.change { s -> val order = s.categories.toMutableList(); val index = order.indexOf(category); val next = index + delta; if (index >= 0 && next in order.indices) { order[index] = order[next]; order[next] = category }; s.copy(categories = order) } }
-                IconButton({ move(-1) }) { Icon(Icons.Outlined.KeyboardArrowUp, tr("REORDER"), tint = Pink) }
-                IconButton({ move(1) }) { Icon(Icons.Outlined.KeyboardArrowDown, tr("REORDER"), tint = Pink) }
-                IconButton({ deleting = category }) { Icon(Icons.Outlined.DeleteOutline, tr("DELETE"), tint = Pink) }
+                Box {
+                    var categoryMenu by remember { mutableStateOf(false) }
+                    IconButton({ categoryMenu = true }) { Icon(Icons.Outlined.MoreHoriz, tr("MORE"), tint = Pink) }
+                    NativeMenu(categoryMenu, { categoryMenu = false }, listOf(
+                        listOf(MenuAction(tr("RENAME"), Icons.Outlined.Edit) { editing = category; name = category }),
+                        listOf(MenuAction(pt("Move up", "上移"), Icons.Outlined.KeyboardArrowUp) { move(-1) }, MenuAction(pt("Move down", "下移"), Icons.Outlined.KeyboardArrowDown) { move(1) }),
+                        listOf(MenuAction(tr("DELETE"), Icons.Outlined.DeleteOutline, destructive = true) { deleting = category })))
+                }
             } }) } }
     }
     if (editing != null) AlertDialog({ editing = null }, title = { Text(tr(if (editing.isNullOrEmpty()) "CATEGORY_ADD" else "RENAME_CATEGORY")) },

@@ -44,7 +44,7 @@ import kotlinx.coroutines.launch
     LaunchedEffect(app.sources) { repo.syncSourceAccounts(app.sources) }
     Column {
         PageTitle(tr("TRACKING"), vm::back, actions = { IconButton({ vm.run { repo.retryPending(); vm.message = Localization.string(vm.repo.context, "DONE") } }) { Icon(Icons.Outlined.Sync, tr("SYNC_WITH_TRACKER"), tint = Pink) } })
-        LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp + centeredInset(DetailWidth), vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             item { Text(tr("TRACKERS"), style = MaterialTheme.typography.titleLarge); Text(tr("UPDATE_AFTER_READING_INFO"), color = MaterialTheme.colorScheme.onSurfaceVariant) }
             item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(tr("UPDATE_AFTER_READING")); Switch(settings.bool("Tracking.updateAfterReading"), { vm.run { settings.put("Tracking.updateAfterReading", it) } }) } }
             item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(tr("AUTO_SYNC_HISTORY")); Switch(settings.bool("Tracking.autoSyncFromTracker"), { vm.run { settings.put("Tracking.autoSyncFromTracker", it) } }) } }
@@ -125,7 +125,7 @@ import kotlinx.coroutines.launch
     Column {
         PageTitle(tr("TRACKING"), vm::back, actions = { IconButton({ adding = true }) { Icon(Icons.Outlined.Add, tr("START_TRACKING"), tint = Pink) } })
         Text(manga.title, Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
-        LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp + centeredInset(DetailWidth), vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             if (bindings.isEmpty()) item { EmptyPage(Icons.Outlined.Sync, tr("START_TRACKING"), pt("Log in, then search and select a matching item.", "连接账号后，搜索并选择对应条目。"), tr("START_TRACKING"), { adding = true }) }
             items(bindings, key = { it.id }) { b ->
                 val a = tracking.accounts.firstOrNull { it.id == b.accountId }
@@ -133,12 +133,19 @@ import kotlinx.coroutines.launch
                     Text(a?.name ?: b.accountId, fontWeight = FontWeight.Bold); Text(b.title)
                     Text("${tr("TRACK_${b.state.status.name}")} · ${b.state.chapter} / ${b.state.totalChapters.takeIf { it > 0 } ?: "?"}" + if (a?.provider?.server == false) " · ${TrackingScores.display(a, b.state.score)}/${TrackingScores.scale(a)}" else "")
                     if (b.error.isNotEmpty()) Text(b.error + " · " + pt("Saved for retry", "已保存到待同步队列"), color = MaterialTheme.colorScheme.error)
-                    Row(Modifier.horizontalScroll(rememberScrollState())) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         TextButton({ editing = b }) { Text(tr("EDIT")) }
-                        TextButton({ vm.run { repo.refreshBinding(b) } }) { Text(tr("RELOAD")) }
-                        TextButton({ vm.run { repo.syncBindingProgress(vm.repo, manga.id, b); vm.message = Localization.string(vm.repo.context, "DONE") } }) { Text(tr("SYNC_LOCAL_HISTORY")) }
-                        if (a != null) TextButton({ uriHandler.openUri(repo.api.webUrl(a, b.remoteId)) }) { Text(tr("VIEW_ON_WEBSITE")) }
-                        TextButton({ removing = b }) { Text(tr("STOP_TRACKING")) }
+                        Spacer(Modifier.weight(1f))
+                        Box {
+                            var cardMenu by remember { mutableStateOf(false) }
+                            IconButton({ cardMenu = true }) { Icon(Icons.Outlined.MoreHoriz, tr("MORE"), tint = Pink) }
+                            NativeMenu(cardMenu, { cardMenu = false }, listOf(
+                                listOf(
+                                    MenuAction(tr("RELOAD"), Icons.Outlined.Refresh) { vm.run { repo.refreshBinding(b) } },
+                                    MenuAction(tr("SYNC_LOCAL_HISTORY"), Icons.Outlined.Sync) { vm.run { repo.syncBindingProgress(vm.repo, manga.id, b); vm.message = Localization.string(vm.repo.context, "DONE") } }),
+                                if (a != null) listOf(MenuAction(tr("VIEW_ON_WEBSITE"), Icons.Outlined.Public) { uriHandler.openUri(repo.api.webUrl(a, b.remoteId)) }) else emptyList(),
+                                listOf(MenuAction(tr("STOP_TRACKING"), Icons.Outlined.LinkOff, destructive = true) { removing = b })))
+                        }
                     }
                 } }
             }
@@ -192,10 +199,10 @@ private suspend fun bindTrackedManga(vm: MonogatariViewModel, repo: TrackingRepo
     var score by remember { mutableStateOf(TrackingScores.display(account, state.score)) }; var offset by remember { mutableStateOf(binding.chapterOffset.toString()) }
     AlertDialog(dismiss, title = { Text(account.name) }, text = { Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         if (!account.provider.server) {
-            Text(tr("STATUS")); Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) { TrackStatus.entries.forEach { s -> FilterChip(s == state.status, { state = state.copy(status = s) }, { Text(tr("TRACK_${s.name}")) }) } }
+            MenuPicker(tr("STATUS"), TrackStatus.entries.map { it to tr("TRACK_${it.name}") }, state.status) { state = state.copy(status = it) }
             val options = TrackingScores.options(account)
             if (options.isEmpty()) OutlinedTextField(score, { score = it }, label = { Text("${tr("SCORE")} / ${TrackingScores.scale(account)}") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
-            else Row(Modifier.horizontalScroll(rememberScrollState())) { options.forEach { (label, value) -> FilterChip(state.score == value, { state = state.copy(score = value); score = TrackingScores.display(account, value) }, { Text(label) }) } }
+            else MenuPicker(tr("SCORE"), options.map { (label, value) -> value to label }, state.score) { value -> state = state.copy(score = value); score = TrackingScores.display(account, value) }
         }
         OutlinedTextField(chapter, { chapter = it }, label = { Text(tr("CHAPTERS")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
         OutlinedTextField(volume, { volume = it }, label = { Text(tr("VOLUMES")) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), singleLine = true)

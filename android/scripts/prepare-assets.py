@@ -92,7 +92,7 @@ def main():
     parser = argparse.ArgumentParser(description="下载并检查物语阅读器需要的模型文件。")
     parser.add_argument("--from-file", type=Path, help="使用已下载的阅读器模型压缩包。")
     parser.add_argument("--check", action="store_true", help="仅检查现有文件，不下载或修改。")
-    parser.add_argument("--with-original-models", action="store_true", help="同时准备模型转换工具需要的原版模型。")
+    parser.add_argument("--with-original-models", action="store_true", help="同时准备模型转换工具需要的 Core ML 原始模型。")
     args = parser.parse_args()
     manifest = json.loads((ROOT / "asset-manifest.json").read_text(encoding="utf-8"))
     prepare(manifest, ROOT / "app/src/main/assets", args.from_file, args.check)

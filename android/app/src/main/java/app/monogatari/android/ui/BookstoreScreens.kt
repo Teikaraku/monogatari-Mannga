@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PageSize
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -30,6 +31,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.coerceAtLeast
+import androidx.compose.ui.unit.coerceAtMost
+import androidx.compose.ui.unit.coerceIn
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewModelScope
@@ -107,7 +111,8 @@ private val rankPeriods = setOf("day", "week", "month", "total")
                 // The placeholder occupies the banner slot from the first frame, so the list stays anchored at the top when data arrives.
                 if (home?.features?.isNotEmpty() == true) item(key = "features") { CopyFeaturePager(home.features, vm::open) }
                 else if (home == null && memory.error == null) item(key = "features") { CopyFeaturePlaceholder() }
-                item(key = "shortcuts") { Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 14.dp)) {
+                // Five shortcuts spread over a tablet's width would drift apart; they keep a phone-sized row.
+                item(key = "shortcuts") { Row(Modifier.fillMaxWidth().wrapContentWidth(Alignment.Start).widthIn(max = 600.dp).padding(horizontal = 12.dp, vertical = 14.dp)) {
                     CopyShortcut(pt("Discover", "发现"), Icons.Outlined.Explore) { openCopy(vm, "discover") }
                     CopyShortcut(pt("Categories", "分类"), Icons.Outlined.Widgets) { openCopy(vm, "categories") }
                     CopyShortcut(pt("Rankings", "排行"), Icons.Outlined.BarChart) { openCopy(vm, "ranking") }
@@ -181,8 +186,13 @@ private fun LazyListScope.copyHomeShelves(home: CopyHome, vm: MonogatariViewMode
         Text(title, Modifier.padding(top = 7.dp), fontSize = 12.sp)
     }
 }
+/** Phones show one banner at the phone height; wider windows keep that shape and show several banners side by side. */
+private val bannerMaxWidth = 520.dp
+@Composable private fun bannerWidth(): Dp = (windowWidth() - 40.dp).coerceIn(0.dp, bannerMaxWidth)
+@Composable private fun bannerHeight(): Dp = (bannerWidth() / 1.95f).coerceAtLeast(190.dp)
 @Composable private fun CopyFeaturePager(features: List<CopyFeature>, onOpen: (Manga) -> Unit) {
     val pager = rememberPagerState { features.size }
+    val pageWidth = bannerWidth(); val pageHeight = bannerHeight()
     // The timer restarts whenever a page settles, so a manual swipe always gets a full interval.
     LaunchedEffect(pager, features.size, pager.settledPage) {
         if (features.size < 2) return@LaunchedEffect
@@ -190,9 +200,9 @@ private fun LazyListScope.copyHomeShelves(home: CopyHome, vm: MonogatariViewMode
         if (!pager.isScrollInProgress) pager.animateScrollToPage((pager.settledPage + 1) % features.size)
     }
     Column {
-        HorizontalPager(pager, contentPadding = PaddingValues(horizontal = 20.dp), pageSpacing = 12.dp) { index ->
+        HorizontalPager(pager, contentPadding = PaddingValues(horizontal = 20.dp), pageSize = PageSize.Fixed(pageWidth), pageSpacing = 12.dp) { index ->
             val feature = features[index]
-            Box(Modifier.fillMaxWidth().height(190.dp).clip(RoundedCornerShape(18.dp)).clickable { onOpen(feature.manga) }) {
+            Box(Modifier.fillMaxWidth().height(pageHeight).clip(RoundedCornerShape(18.dp)).clickable { onOpen(feature.manga) }) {
                 AsyncImage(feature.image, feature.manga.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = .68f)))))
                 Column(Modifier.align(Alignment.BottomStart).padding(16.dp)) {
@@ -225,8 +235,10 @@ private fun Manga.latestChapter(): String = copyMeta().let { it.optString("copyL
         if (manga.author.isNotBlank()) Text(manga.author, fontSize = 11.sp, lineHeight = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
-@Composable private fun CopyBookGrid(entries: List<Manga>, vm: MonogatariViewModel, columns: Int = 3) {
-    Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+/** Three columns on phones; six on tablets and in landscape, so the six-item shelves fill one row at a familiar cover size. */
+@Composable private fun CopyBookGrid(entries: List<Manga>, vm: MonogatariViewModel) {
+    val columns = if (windowWidth() >= 600.dp) 6 else 3
+    Column(Modifier.padding(horizontal = 20.dp).widthIn(max = 960.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         entries.chunked(columns).forEach { row -> Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             row.forEach { CopyBookCard(it, vm, Modifier.weight(1f)) }
             repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
@@ -260,7 +272,8 @@ private val rankRowHeight = 78.dp
         Row(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             rankings.forEach { ranking -> SheetChip(ranking.title, ranking.period == current.period, { period = ranking.period }, checkmark = false) }
         }
-        val width = (LocalConfiguration.current.screenWidthDp * .8f).dp
+        // Each chart column stays phone-sized, so tablets show the next columns instead of one stretched list.
+        val width = (windowWidth() * .8f).coerceAtMost(380.dp)
         LazyHorizontalGrid(GridCells.Fixed(rows), Modifier.fillMaxWidth().height(rankRowHeight * rows + 8.dp * (rows - 1)), contentPadding = PaddingValues(horizontal = 20.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             itemsIndexed(current.entries, key = { _, manga -> "${current.period}:${manga.id}" }) { index, manga -> CopyRankRow(manga, index + 1, vm, Modifier.width(width)) }
@@ -321,7 +334,7 @@ private fun fullSizeImage(url: String): String = url.replace(Regex("""(\.(?:jpe?
 }
 
 @Composable private fun CopyFeaturePlaceholder() {
-    Box(Modifier.padding(horizontal = 20.dp).fillMaxWidth().height(190.dp).clip(RoundedCornerShape(18.dp)).background(sheetGroupColor()))
+    Box(Modifier.padding(horizontal = 20.dp).width(bannerWidth()).height(bannerHeight()).clip(RoundedCornerShape(18.dp)).background(sheetGroupColor()))
 }
 @Composable private fun CopyShelfPlaceholder() {
     val tone = sheetGroupColor()
@@ -422,14 +435,15 @@ private fun fullSizeImage(url: String): String = url.replace(Regex("""(\.(?:jpe?
         if (memory.busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp))
         memory.error?.let { CopyError(it, { load(append = memory.lastAppend) }) }
         when (mode) {
-            "topics" -> LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(vertical = 8.dp)) {
+            // One column on phones; tablets fit two or more cards per row.
+            "topics" -> LazyVerticalGrid(GridCells.Adaptive(360.dp), Modifier.weight(1f), contentPadding = PaddingValues(vertical = 8.dp)) {
                 items(memory.topics, key = { it.key }) { topic -> CopyTopicCard(topic) { openCopy(vm, "topic:${topic.key}") } }
-                item { CopyLoadMore(memory.more, memory.busy) { load(true) } }
+                item(span = { GridItemSpan(maxLineSpan) }) { CopyLoadMore(memory.more, memory.busy) { load(true) } }
             }
             "topic" -> LazyVerticalGrid(GridCells.Adaptive(104.dp), Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                 memory.topic?.let { topic ->
-                    item(span = { GridItemSpan(maxLineSpan) }) { Column {
+                    item(span = { GridItemSpan(maxLineSpan) }) { Column(Modifier.widthIn(max = ReadableWidth)) {
                         SubcomposeAsyncImage(fullSizeImage(topic.image), topic.title, Modifier.fillMaxWidth().aspectRatio(2.5f).clip(RoundedCornerShape(16.dp)), contentScale = ContentScale.Crop) {
                             if (painter.state is AsyncImagePainter.State.Error) AsyncImage(topic.image, topic.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                             else SubcomposeAsyncImageContent()
@@ -446,9 +460,11 @@ private fun fullSizeImage(url: String): String = url.replace(Regex("""(\.(?:jpe?
                     if (mode == "search" && memory.submitted.isBlank()) Text(pt("Search comics by title or author.", "输入漫画名或作者开始搜索"), Modifier.padding(20.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     else Text(pt("No comics found.", "没有找到符合条件的漫画"), Modifier.padding(20.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if (mode == "ranking") LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // A single ranked list on phones; tablets read the chart in two or more columns.
+                if (mode == "ranking") LazyVerticalGrid(GridCells.Adaptive(340.dp), Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     itemsIndexed(memory.entries, key = { _, manga -> manga.id }) { index, manga -> CopyRankRow(manga, index + 1, vm, Modifier.fillMaxWidth()) }
-                    item { CopyLoadMore(memory.more, memory.busy) { load(true) } }
+                    item(span = { GridItemSpan(maxLineSpan) }) { CopyLoadMore(memory.more, memory.busy) { load(true) } }
                 } else LazyVerticalGrid(GridCells.Adaptive(104.dp), Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                     items(memory.entries, key = { it.id }) { manga -> CopyBookCard(manga, vm, showLatest = mode == "updates" || mode == "newest") }

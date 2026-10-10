@@ -92,7 +92,7 @@ private val ruleTitles = listOf("DOWNLOADED", "IS_TRACKING", "FILTER_HAS_UNREAD"
     Column {
         PageTitle(tr("MANGA_UPDATES"), vm::back)
         if (groups.isEmpty()) EmptyPage(Icons.Outlined.NotificationsNone, tr("NO_UPDATES"), "")
-        else LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) { groups.groupBy { it.day }.forEach { (day, entries) ->
+        else LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp + centeredInset(DetailWidth), vertical = 8.dp)) { groups.groupBy { it.day }.forEach { (day, entries) ->
             item(key = "date-$day") { Text(relativeDay(vm.repo.context, day), Modifier.padding(vertical = 14.dp), fontSize = 20.sp, fontWeight = FontWeight.Medium) }
             items(entries, key = { org.json.JSONArray(listOf(it.day.toString(), it.manga.sourceId, it.manga.key)).toString() }) { group ->
                 val manga = group.manga

@@ -46,7 +46,7 @@ import app.monogatari.android.data.objects
     Column {
         PageTitle(tr("DISPLAY_LOGS"), vm::back, actions = { IconButton({ export.launch("monogatari-log.txt") }) { Icon(Icons.Outlined.Share, tr("EXPORT_LOGS"), tint = Pink) }; IconButton({ logs.clear() }) { Icon(Icons.Outlined.DeleteOutline, tr("CLEAR"), tint = Pink) } })
         SearchField(query, tr("SEARCH")) { query = it }
-        LazyColumn(contentPadding = PaddingValues(16.dp)) { items(entries.filter { it.message.contains(query, true) }.asReversed()) { Text(it.formatted(), fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(vertical = 3.dp)) } }
+        LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp + centeredInset(DetailWidth), vertical = 16.dp)) { items(entries.filter { it.message.contains(query, true) }.asReversed()) { Text(it.formatted(), fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(vertical = 3.dp)) } }
     }
 }
 @Composable fun LicensesScreen(vm: MonogatariViewModel) {

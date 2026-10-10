@@ -54,7 +54,7 @@ import kotlinx.coroutines.launch
         SearchField(query, tr("SEARCH")) { query = it }
         Box(Modifier.weight(1f)) {
             if (history.isEmpty()) EmptyPage(Icons.Outlined.History, tr("NO_HISTORY"), tr("NO_HISTORY_TEXT"))
-            else LazyColumn(state = listState, contentPadding = PaddingValues(16.dp)) {
+            else LazyColumn(state = listState, contentPadding = PaddingValues(horizontal = 16.dp + centeredInset(DetailWidth), vertical = 16.dp)) {
                 history.groupBy { Instant.ofEpochMilli(it.second.readAt).atZone(zone).toLocalDate() }.forEach { (date, entries) ->
                     item { Text(relativeDay(vm.repo.context, date), Modifier.padding(vertical = 14.dp), fontSize = 20.sp, fontWeight = FontWeight.Bold) }
                     items(entries, key = { JSONArray(listOf(it.first.sourceId, it.first.key, it.second.key)).toString() }) { (m, c) ->

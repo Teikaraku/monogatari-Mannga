@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.MenuBook
+import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -207,19 +208,24 @@ private val LibrarySelectionSetSaver = androidx.compose.runtime.saveable.listSav
             IconButton({ vm.navigate("updates") }) { Icon(Icons.Outlined.NotificationsNone, tr("MANGA_UPDATES"), tint = Pink) }
             Box {
                 IconButton({ more = true }) { Icon(Icons.Outlined.MoreHoriz, tr("MORE_BARBUTTON"), tint = Pink) }
-                CallerContextDropdownMenu(more, { more = false }) {
-                    DropdownMenuItem({ Text(tr(if (state.preferences.listView) "LAYOUT_GRID" else "LAYOUT_LIST")) }, { more = false; vm.run { settings.put("Library.listView", !state.preferences.listView) } })
-                    listOf("SORT_TITLE", "SORT_LAST_READ", "SORT_LAST_OPENED", "SORT_LAST_UPDATED", "SORT_DATE_ADDED", "SORT_LATEST_CHAPTER", "SORT_UNREAD_CHAPTERS", "SORT_TOTAL_CHAPTERS").forEachIndexed { index, label ->
-                        DropdownMenuItem({ Text(tr(label)) }, { more = false; vm.run { settings.put("Library.sortOption", index) } })
-                    }
-                    DropdownMenuItem({ Text(tr(if (settings.bool("Library.sortAscending")) "DESCENDING" else "ASCENDING")) }, { more = false; vm.run { settings.put("Library.sortAscending", !settings.bool("Library.sortAscending")) } })
-                    DropdownMenuItem({ Text(tr("FILTER_BY")) }, { more = false; vm.navigate("libraryFilters") })
-                    DropdownMenuItem({ Text(tr("SELECT")) }, { more = false; beginSelection() }, enabled = hasAccess)
-                    DropdownMenuItem({ Text(tr("CATEGORIES")) }, { more = false; vm.navigate("categories") })
-                    DropdownMenuItem({ Text(tr("UPDATE_NOW")) }, { more = false;
-                        if (app.monogatari.android.library.LibraryRefresh.requiresWifi(vm.repo)) refreshWifi = true else refreshLibrary()
-                    }, enabled = hasAccess)
-                }
+                // Select, layout, then sort and filter, as in the iOS library menu; Android adds categories and manual updates.
+                val sortLabels = listOf("SORT_TITLE", "SORT_LAST_READ", "SORT_LAST_OPENED", "SORT_LAST_UPDATED", "SORT_DATE_ADDED", "SORT_LATEST_CHAPTER", "SORT_UNREAD_CHAPTERS", "SORT_TOTAL_CHAPTERS")
+                val sortIndex = settings.int("Library.sortOption"); val ascending = settings.bool("Library.sortAscending")
+                NativeMenu(more, { more = false }, listOf(
+                    listOf(MenuAction(tr("SELECT"), Icons.Outlined.CheckCircleOutline, enabled = hasAccess) { beginSelection() }),
+                    listOf(
+                        MenuAction(tr("LAYOUT_GRID"), Icons.Outlined.GridView, checked = !state.preferences.listView) { vm.run { settings.put("Library.listView", false) } },
+                        MenuAction(tr("LAYOUT_LIST"), Icons.AutoMirrored.Outlined.ViewList, checked = state.preferences.listView) { vm.run { settings.put("Library.listView", true) } }),
+                    listOf(
+                        MenuSubmenu(tr("SORT_BY"), Icons.Outlined.SwapVert, tr(sortLabels.getOrElse(sortIndex) { sortLabels.first() }), listOf(
+                            sortLabels.mapIndexed { index, label -> MenuAction(tr(label), checked = index == sortIndex) { vm.run { settings.put("Library.sortOption", index) } } },
+                            listOf(false, true).map { up -> MenuAction(tr(if (up) "ASCENDING" else "DESCENDING"), checked = ascending == up) { vm.run { settings.put("Library.sortAscending", up) } } })),
+                        MenuAction(tr("BUTTON_FILTER"), Icons.Outlined.FilterList) { vm.navigate("libraryFilters") }),
+                    listOf(
+                        MenuAction(tr("CATEGORIES"), Icons.Outlined.Folder) { vm.navigate("categories") },
+                        MenuAction(tr("UPDATE_NOW"), Icons.Outlined.Sync, enabled = hasAccess) {
+                            if (app.monogatari.android.library.LibraryRefresh.requiresWifi(vm.repo)) refreshWifi = true else refreshLibrary()
+                        })))
             }
         })
         SearchField(query, tr("LIBRARY_SEARCH")) { query = it }
@@ -246,19 +252,32 @@ private val LibrarySelectionSetSaver = androidx.compose.runtime.saveable.listSav
         }
         if (selecting && hasAccess) {
             Text(tr("SELECTED_%i_OF_%i", selected.size, manga.size), Modifier.padding(horizontal = 16.dp, vertical = 6.dp), fontSize = 13.sp)
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+            // As on iOS: remove and add-to-category on the toolbar, everything else in one menu instead of a scrolling row of buttons.
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 val enabled = selected.isNotEmpty()
                 TextButton({ val value = !allItemsSelected; manga.forEach { setSelected(it, value) } }, enabled = manga.isNotEmpty()) { Text(selectionAllLabel) }
-                TextButton({ action = "read" }, enabled = enabled) { Text(tr("MARK_READ")) }
-                TextButton({ action = "unread" }, enabled = enabled) { Text(tr("MARK_UNREAD")) }
-                TextButton({ action = "download" }, enabled = enabled) { Text(tr("DOWNLOAD")) }
-                TextButton({ action = "downloadUnread" }, enabled = enabled) { Text(tr("DOWNLOAD") + " · " + tr("UNREAD")) }
-                TextButton({ action = "removeDownloads" }, enabled = enabled) { Text(tr("REMOVE_DOWNLOADS")) }
-                TextButton({ action = "category" }, enabled = enabled) { Text(tr("CATEGORIES")) }
-                TextButton({ if (canEditLibrary()) { vm.navigate("migration", selected.joinToString("\n")); selecting = false; selected = emptySet() } }, enabled = enabled) { Text(tr("MIGRATE")) }
-                TextButton({ action = "remove" }, enabled = enabled) { Text(tr("REMOVE")) }
-                if (category in state.categories && org.json.JSONObject(state.categoryMetadata).optJSONObject(category)?.optBoolean("group") != true) TextButton({ action = "removeCategory" }, enabled = enabled) { Text(tr("REMOVE_FROM_CATEGORY")) }
-                TextButton({ selecting = false; selected = emptySet() }) { Text(tr("DONE")) }
+                Spacer(Modifier.weight(1f))
+                IconButton({ action = "remove" }, enabled = enabled) { Icon(Icons.Outlined.DeleteOutline, tr("REMOVE"), tint = if (enabled) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface.copy(alpha = .38f)) }
+                IconButton({ action = "category" }, enabled = enabled) { Icon(Icons.Outlined.CreateNewFolder, tr("CATEGORIES"), tint = if (enabled) Pink else MaterialTheme.colorScheme.onSurface.copy(alpha = .38f)) }
+                Box {
+                    var selectionMenu by remember { mutableStateOf(false) }
+                    IconButton({ selectionMenu = true }, enabled = enabled) { Icon(Icons.Outlined.MoreHoriz, tr("MORE_BARBUTTON"), tint = if (enabled) Pink else MaterialTheme.colorScheme.onSurface.copy(alpha = .38f)) }
+                    val removable = category in state.categories && org.json.JSONObject(state.categoryMetadata).optJSONObject(category)?.optBoolean("group") != true
+                    NativeMenu(selectionMenu, { selectionMenu = false }, listOf(
+                        listOf(
+                            MenuSubmenu(tr("MARK_ALL"), sections = listOf(listOf(
+                                MenuAction(tr("READ"), Icons.Outlined.CheckCircleOutline) { action = "read" },
+                                MenuAction(tr("UNREAD"), Icons.Outlined.RemoveCircleOutline) { action = "unread" }))),
+                            MenuSubmenu(tr("DOWNLOAD"), Icons.Outlined.Download, sections = listOf(listOf(
+                                MenuAction(tr("ALL")) { action = "download" },
+                                MenuAction(tr("UNREAD")) { action = "downloadUnread" })))),
+                        listOf(MenuAction(tr("MIGRATE"), Icons.Outlined.SwapHoriz) { if (canEditLibrary()) { vm.navigate("migration", selected.joinToString("\n")); selecting = false; selected = emptySet() } }),
+                        buildList {
+                            add(MenuAction(tr("REMOVE_DOWNLOADS"), Icons.Outlined.FileDownloadOff, destructive = true) { action = "removeDownloads" })
+                            if (removable) add(MenuAction(tr("REMOVE_FROM_CATEGORY"), Icons.Outlined.FolderOff, destructive = true) { action = "removeCategory" })
+                        }))
+                }
+                TextButton({ selecting = false; selected = emptySet() }) { Text(tr("DONE"), fontWeight = FontWeight.SemiBold) }
             }
         }
     }

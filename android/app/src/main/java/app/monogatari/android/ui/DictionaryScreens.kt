@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.geometry.Offset
@@ -62,7 +63,7 @@ import org.json.JSONObject
             IconButton({ lookup = true }) { Icon(Icons.Outlined.Search, tr("SEARCH"), tint = Pink) }
             IconButton({ import.launch(arrayOf("application/zip", "application/octet-stream", "application/x-zip-compressed")) }) { Icon(Icons.Outlined.Add, tr("IMPORT"), tint = Pink) }
         })
-        LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp + centeredInset(DetailWidth), vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(tr("DICTIONARY_LOOKUP")); Switch(settings.bool("Dictionary.enable"), { vm.run { settings.put("Dictionary.enable", it) } }) }; Text(tr("DICTIONARY_SETTINGS_TEXT"), color = MaterialTheme.colorScheme.onSurfaceVariant) }
             item { Text(tr("ABOUT_DICTIONARIES_TEXT"), style = MaterialTheme.typography.bodySmall) }
             item { Row(Modifier.horizontalScroll(rememberScrollState())) { listOf("term" to "TERM_DICTIONARIES", "frequency" to "FREQUENCY_DICTIONARIES", "pitch" to "PITCH_DICTIONARIES", "kanji" to "KANJI_DICTIONARIES").forEach { (type, key) -> FilterChip(kind == type, { kind = type }, { Text(tr(key)) }) } } }
@@ -70,11 +71,22 @@ import org.json.JSONObject
             items(dictionaries.filter { kind in it.kinds.split(',') }, key = { it.id }) { info -> Card { Column(Modifier.padding(14.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Column(Modifier.weight(1f)) { Text(info.title, fontWeight = FontWeight.Bold); Text("${info.revision} · ${info.terms} · ${info.author}", style = MaterialTheme.typography.bodySmall) }; Switch(info.enabled, { vm.run { repo.configure(info, enabled = it) } }) }
                 if (info.description.isNotEmpty()) Text(info.description, style = MaterialTheme.typography.bodySmall)
-                Row(Modifier.horizontalScroll(rememberScrollState())) {
-                    TextButton({ vm.run { repo.move(info, -1) } }) { Text("↑") }
-                    TextButton({ vm.run { repo.move(info, 1) } }) { Text("↓") }
-                    listOf("none", "monolingual", "bilingual", "exclude").forEach { category -> FilterChip(info.category == category, { vm.run { repo.configure(info, category = category) } }, { Text(when (category) { "none" -> tr("NONE"); "monolingual" -> pt("Monolingual", "单语"); "bilingual" -> pt("Bilingual", "双语"); else -> pt("Excluded", "排除") }) }) }
-                    TextButton({ removing = info }) { Text(tr("REMOVE")) }
+                // Order, category and removal live in one menu, like the iOS dictionary list.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val categories = listOf("none" to tr("NONE"), "monolingual" to pt("Monolingual", "单语"), "bilingual" to pt("Bilingual", "双语"), "exclude" to pt("Excluded", "排除"))
+                    Text(categories.firstOrNull { it.first == info.category }?.second.orEmpty(), Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Box {
+                        var dictionaryMenu by remember { mutableStateOf(false) }
+                        IconButton({ dictionaryMenu = true }) { Icon(Icons.Outlined.MoreHoriz, tr("MORE"), tint = Pink) }
+                        NativeMenu(dictionaryMenu, { dictionaryMenu = false }, listOf(
+                            listOf(
+                                MenuAction(pt("Move up", "上移"), Icons.Outlined.KeyboardArrowUp) { vm.run { repo.move(info, -1) } },
+                                MenuAction(pt("Move down", "下移"), Icons.Outlined.KeyboardArrowDown) { vm.run { repo.move(info, 1) } }),
+                            listOf(MenuSubmenu(tr("CATEGORY"), Icons.Outlined.Category, categories.firstOrNull { it.first == info.category }?.second.orEmpty(), listOf(
+                                categories.map { (category, label) -> MenuAction(label, checked = info.category == category) { vm.run { repo.configure(info, category = category) } } }))),
+                            listOf(MenuAction(tr("REMOVE"), Icons.Outlined.DeleteOutline, destructive = true) { removing = info })))
+                    }
                 }
             } } }
             item { OutlinedButton({ import.launch(arrayOf("application/zip", "application/octet-stream")) }, Modifier.fillMaxWidth()) { Text(tr("IMPORT")) } }
@@ -88,8 +100,8 @@ import org.json.JSONObject
             item { Text(tr("DISPLAY_MODE")); Row { listOf("default" to "DEFAULT_DISPLAY_MODE", "fullWidth" to "FULL_WIDTH").forEach { (mode, label) -> FilterChip(settings.string("Dictionary.displayMode") == mode, { vm.run { settings.put("Dictionary.displayMode", mode) } }, { Text(tr(label)) }) } } }
             item { Text(tr("DICTIONARY_POPUP_WIDTH")); Slider(settings.double("Dictionary.popupWidth").toFloat(), { vm.run { settings.put("Dictionary.popupWidth", it.toDouble()) } }, valueRange = 240f..900f) }
             item { Text(tr("DICTIONARY_POPUP_HEIGHT")); Slider(settings.double("Dictionary.popupHeight").toFloat(), { vm.run { settings.put("Dictionary.popupHeight", it.toDouble()) } }, valueRange = 350f..1000f) }
-            item { Text(tr("UPDATE_INTERVAL")); Row(Modifier.horizontalScroll(rememberScrollState())) { listOf("never" to "NEVER", "daily" to "DAILY", "weekly" to "WEEKLY", "monthly" to "MONTHLY").forEach { (value, label) -> FilterChip(settings.string("Dictionary.updateInterval") == value, { vm.run { settings.put("Dictionary.updateInterval", value); repo.load() } }, { Text(tr(label)) }) } } }
-            item { Row(Modifier.horizontalScroll(rememberScrollState())) { listOf("single-tap" to "SINGLE_TAP", "long-press" to "LONG_PRESS").forEach { (key, label) -> FilterChip(settings.string("Dictionary.lookupGesture") == key, { vm.run { settings.put("Dictionary.lookupGesture", key) } }, { Text(tr(label)) }) } } }
+            item { MenuPicker(tr("UPDATE_INTERVAL"), listOf("never" to "NEVER", "daily" to "DAILY", "weekly" to "WEEKLY", "monthly" to "MONTHLY").map { (value, label) -> value to tr(label) }, settings.string("Dictionary.updateInterval")) { value -> vm.run { settings.put("Dictionary.updateInterval", value); repo.load() } } }
+            item { MenuPicker(tr("LOOKUP_GESTURE"), listOf("single-tap" to "SINGLE_TAP", "long-press" to "LONG_PRESS").map { (key, label) -> key to tr(label) }, settings.string("Dictionary.lookupGesture")) { key -> vm.run { settings.put("Dictionary.lookupGesture", key) } } }
             item { TextButton({ vm.navigate("vocabulary") }) { Text(tr("VOCABULARY")) }; TextButton({ anki = true }) { Text("AnkiConnect") } }
         }
     }
@@ -113,7 +125,7 @@ import org.json.JSONObject
         SearchField(query, tr("SEARCH")) { query = it }
         Row(Modifier.padding(horizontal = 16.dp)) { TextButton({ format = "apkg"; export.launch("${AppBrand.NAME}-vocabulary.apkg") }, enabled = entries.isNotEmpty()) { Text("Anki APKG") }; TextButton({ format = "csv"; export.launch("${AppBrand.NAME}-vocabulary.csv") }, enabled = entries.isNotEmpty()) { Text("CSV") } }
         if (entries.isEmpty()) EmptyPage(Icons.Outlined.Translate, tr("NO_VOCABULARY"), tr("NO_VOCABULARY_TEXT"))
-        LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { items(entries.filter { it.word.contains(query, true) || it.reading.contains(query, true) }, key = { it.id }) { e ->
+        LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp + centeredInset(DetailWidth), vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { items(entries.filter { it.word.contains(query, true) || it.reading.contains(query, true) }, key = { it.id }) { e ->
             Card(Modifier.fillMaxWidth().clickable { editing = e }) { Column(Modifier.padding(14.dp)) { Text(e.word, style = MaterialTheme.typography.titleLarge); if (e.reading.isNotBlank()) Text(e.reading, color = Pink); Text(e.sentence, maxLines = 2); Text(e.definition, maxLines = 3, style = MaterialTheme.typography.bodySmall) } }
         } }
     }

@@ -35,11 +35,15 @@ import app.monogatari.android.reader.ChapterListing
     val completed = state.manga.filter { it.sourceId != "local" }.map { it.copy(chapters=it.chapters+ChapterListing.orphans(state,it)) }.filter { it.chapters.any(Chapter::downloaded) }
     Column(Modifier.fillMaxSize()) {
     PageTitle(tr("DOWNLOADS"), vm::back, actions = {
-        IconButton({ vm.run { service.pause() } }) { Icon(Icons.Outlined.Pause, tr("PAUSE")) }
-        IconButton({ resume() }) { Icon(Icons.Outlined.PlayArrow, tr("RESUME")) }
-        IconButton({ confirmDelete = true }) { Icon(Icons.Outlined.DeleteSweep, tr("REMOVE_ALL_DOWNLOADS")) }
+        Box {
+            var queueMenu by remember { mutableStateOf(false) }
+            IconButton({ queueMenu = true }) { Icon(Icons.Outlined.MoreHoriz, tr("MORE"), tint = Pink) }
+            NativeMenu(queueMenu, { queueMenu = false }, listOf(
+                listOf(MenuAction(tr("PAUSE"), Icons.Outlined.Pause) { vm.run { service.pause() } }, MenuAction(tr("RESUME"), Icons.Outlined.PlayArrow) { resume() }),
+                listOf(MenuAction(tr("REMOVE_ALL_DOWNLOADS"), Icons.Outlined.DeleteOutline, destructive = true) { confirmDelete = true })))
+        }
     })
-    LazyColumn(Modifier.fillMaxSize()) {
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = centeredInset(DetailWidth))) {
         item { Row(Modifier.padding(horizontal = 16.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(tr("ONLY_DOWNLOAD_ON_WIFI"), Modifier.weight(1f)); Switch(wifi, { wifi = it; service.wifiOnly = it })
         } }

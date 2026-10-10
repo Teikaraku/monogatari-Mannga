@@ -266,13 +266,16 @@ struct CopyCatalogView: View {
     private var content: some View {
         switch model.mode {
             case "topics":
-                ForEach(model.topics) { topic in
-                    Button {
-                        path.push(CopyCatalogView(mode: "topic", topicKey: topic.key), title: topic.title)
-                    } label: {
-                        CopyTopicRow(topic: topic)
+                // One column on iPhone; iPads fit two or more topics per row.
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 360), spacing: 0)], alignment: .leading, spacing: 0) {
+                    ForEach(model.topics) { topic in
+                        Button {
+                            path.push(CopyCatalogView(mode: "topic", topicKey: topic.key), title: topic.title)
+                        } label: {
+                            CopyTopicRow(topic: topic)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             case "topic":
                 if let topic = model.topic {
@@ -288,13 +291,15 @@ struct CopyCatalogView: View {
                             Text(Self.plainText(topic.intro)).lineSpacing(6).textSelection(.enabled)
                         }
                     }
+                    .frame(maxWidth: 752, alignment: .leading)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 12)
                 }
                 grid(showLatest: false)
             case "ranking":
                 emptyMessage
-                LazyVStack(spacing: 8) {
+                // A single ranked list on iPhone; iPads read the chart in two or more columns.
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 340), spacing: 16)], alignment: .leading, spacing: 8) {
                     ForEach(Array(model.entries.enumerated()), id: \.element.id) { index, comic in
                         CopyRankRow(comic: comic, position: index + 1)
                     }

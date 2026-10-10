@@ -50,7 +50,7 @@ import kotlinx.coroutines.withContext
     }
     Column(Modifier.fillMaxSize()) {
         PageTitle(tr("BACKUPS"), vm::back, actions = { IconButton({ create = true }) { Icon(Icons.Outlined.Add, tr("CREATE_BACKUP"), tint = Pink) } })
-        LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp + centeredInset(DetailWidth), vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button({ create = true }, Modifier.weight(1f)) { Text(tr("CREATE_BACKUP")) }
                 OutlinedButton({ import.launch(arrayOf("application/zip", "application/json", "application/octet-stream", "application/x-plist", "*/*")) }, Modifier.weight(1f)) { Text(tr("IMPORT_BACKUP")) }
@@ -62,12 +62,19 @@ import kotlinx.coroutines.withContext
             if (backups.isEmpty() && invalid.isEmpty()) item { Text(tr("BACKUPS") + " (0)", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             items(backups, key = { it.file.name }) { backup -> Card { Column(Modifier.fillMaxWidth().padding(16.dp)) {
                 Row(Modifier.fillMaxWidth().clickable { preview = backup }) { Column(Modifier.weight(1f)) { Text(backup.name, fontWeight = FontWeight.Bold); Text("${DateFormat.getDateTimeInstance().format(Date(backup.date))} · ${size(backup.size)}", style = MaterialTheme.typography.bodySmall); Text(formatTitle(backup.format) + if (backup.automatic) " · ${tr("AUTOMATIC_BACKUPS")}" else "", style = MaterialTheme.typography.bodySmall) }; Icon(Icons.Outlined.ChevronRight, null) }
-                Row(Modifier.horizontalScroll(rememberScrollState())) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     TextButton({ preview = backup }) { Text(tr("RESTORE")) }
-                    IconButton({ rename = backup }) { Icon(Icons.Outlined.Edit, tr("RENAME")) }
-                    IconButton({ exporting = backup.file; export.launch("${safeName(backup.name)}.${backup.format.extension}") }) { Icon(Icons.Outlined.SaveAlt, tr("EXPORT")) }
-                    IconButton({ vm.run { shareBackup(vm, backup) } }) { Icon(Icons.Outlined.Share, tr("SHARE")) }
-                    IconButton({ remove = backup.file }) { Icon(Icons.Outlined.Delete, tr("DELETE")) }
+                    Spacer(Modifier.weight(1f))
+                    Box {
+                        var backupMenu by remember { mutableStateOf(false) }
+                        IconButton({ backupMenu = true }) { Icon(Icons.Outlined.MoreHoriz, tr("MORE"), tint = Pink) }
+                        NativeMenu(backupMenu, { backupMenu = false }, listOf(
+                            listOf(MenuAction(tr("RENAME"), Icons.Outlined.Edit) { rename = backup }),
+                            listOf(
+                                MenuAction(tr("EXPORT"), Icons.Outlined.SaveAlt) { exporting = backup.file; export.launch("${safeName(backup.name)}.${backup.format.extension}") },
+                                MenuAction(tr("SHARE"), Icons.Outlined.IosShare) { vm.run { shareBackup(vm, backup) } }),
+                            listOf(MenuAction(tr("DELETE"), Icons.Outlined.DeleteOutline, destructive = true) { remove = backup.file })))
+                    }
                 }
             } } }
             items(invalid.entries.toList(), key = { it.key.name }) { entry -> Card { Column(Modifier.padding(16.dp)) { Text(tr("CORRUPTED_BACKUP"), color = MaterialTheme.colorScheme.error); Text(entry.key.name); Text(entry.value); TextButton({ remove = entry.key }) { Text(tr("DELETE")) } } } }

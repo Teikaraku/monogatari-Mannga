@@ -92,4 +92,4 @@ Windows 无法运行 Xcode 或 iPhone 原生模拟器。安卓版中的页面调
 
 识别和图片增强模型的文件路径、大小、校验值记录在 `android/asset-manifest.json`。来源和许可保存在 `android/app/src/main/assets/licenses`、`dictionary` 与 `upscale` 文件夹中。`android/model-conversion/README.md` 另有自定义图片增强模型的转换说明。
 
-如需使用模型转换工具重新生成原版图片增强模型，运行 `python android/scripts/prepare-assets.py --with-original-models`。它还会下载 `monogatari-model-sources-0.9.zip`，准备原始 Core ML 模型。普通安卓构建和阅读不需要这一额外步骤。
+如需用模型转换工具重新生成图片增强模型，运行 `python android/scripts/prepare-assets.py --with-original-models`。它会额外下载 `monogatari-model-sources-0.9.zip`，准备 Core ML 原始模型。普通安卓构建和阅读不需要这一步。

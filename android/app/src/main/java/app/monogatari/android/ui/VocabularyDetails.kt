@@ -5,7 +5,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -68,11 +71,11 @@ import kotlinx.coroutines.CancellationException
                     if (editing) TextButton({ vm.run { entry = repo.updateContext(entry.id, sentence.text, offset); editing = false } }) { Text(tr("DONE")) }
                     else Box {
                         IconButton({ menu = true }) { Icon(Icons.Outlined.MoreVert, tr("EDIT")) }
-                        DropdownMenu(menu, { menu = false }) {
-                            DropdownMenuItem({ Text(tr("EDIT")) }, { menu = false; sentence = TextFieldValue(entry.sentence); offset = entry.clozeOffset; editing = true })
-                            DropdownMenuItem({ Text(tr("REMOVE_WORD")) }, { menu = false; vm.run { repo.removeVocabulary(entry.id); dismiss() } })
-                            DropdownMenuItem({ Text("AnkiConnect") }, { menu = false; vm.run { val id = sendToAnki(repo, entry); entry = repo.updateNote(entry.id, id); vm.message = "Anki #$id" } })
-                        }
+                        NativeMenu(menu, { menu = false }, listOf(
+                            listOf(
+                                MenuAction(tr("EDIT"), Icons.Outlined.Edit) { sentence = TextFieldValue(entry.sentence); offset = entry.clozeOffset; editing = true },
+                                MenuAction("AnkiConnect", Icons.AutoMirrored.Outlined.Send) { vm.run { val id = sendToAnki(repo, entry); entry = repo.updateNote(entry.id, id); vm.message = "Anki #$id" } }),
+                            listOf(MenuAction(tr("REMOVE_WORD"), Icons.Outlined.DeleteOutline, destructive = true) { vm.run { repo.removeVocabulary(entry.id); dismiss() } })))
                     }
                 }
                 Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {

@@ -101,24 +101,36 @@ import java.util.Locale
             IconButton(vm::back){Icon(Icons.AutoMirrored.Outlined.ArrowBack,tr("CANCEL"),tint=Pink)}
             Spacer(Modifier.weight(1f))
             if(source!=null && !local)IconButton({vm.run{vm.repo.refresh(manga)}}){Icon(Icons.Outlined.Refresh,tr("REFRESH_DETAILS"))}
-            IconButton({menu=true}){Icon(Icons.Outlined.MoreHoriz,tr("MORE"))}
-            DropdownMenu(menu,{menu=false}) {
-                DropdownMenuItem({Text(tr(if(manga.pinned)"UNPIN" else "PIN"))},{menu=false;vm.run{vm.repo.updateManga(manga.id){it.copy(pinned=!it.pinned)}}})
-                DropdownMenuItem({Text(tr("EDIT"))},{menu=false;edit=true})
-                DropdownMenuItem({Text(tr("SELECT_CHAPTERS"))},{menu=false;selecting=true})
-                DropdownMenuItem({Text(tr("MARK_READ"))},{menu=false;mark(allListed.map{it.key}.toSet(),true)})
-                DropdownMenuItem({Text(tr("MARK_UNREAD"))},{menu=false;mark(allListed.map{it.key}.toSet(),false)})
-                if(local)DropdownMenuItem({Text(tr("IMPORT_FILE"))},{menu=false;importing=true})
-                else {
-                    DropdownMenuItem({Text(tr("DOWNLOAD"))},{menu=false;download(chapters.filter{!it.completed}.map{it.key}.toSet())})
-                    if((manga.chapters+otherDownloads).any{it.downloaded})DropdownMenuItem({Text(tr("REMOVE_ALL_DOWNLOADS"))},{menu=false;removal=(manga.chapters+otherDownloads).filter{it.downloaded}.map{it.key}.toSet()})
-                }
-                DropdownMenuItem({Text(tr("COVER"))},{menu=false;cover=true})
-                if(manga.url.isNotBlank())DropdownMenuItem({Text(tr("SHARE"))},{menu=false;share(manga.url)})
-                if(local)DropdownMenuItem({Text(tr("DELETE"))},{menu=false;removal=manga.chapters.map{it.key}.toSet()})
+            Box {
+                IconButton({menu=true}){Icon(Icons.Outlined.MoreHoriz,tr("MORE"))}
+                // Same sections and order as the iOS menu; Android-only commands follow in their own group.
+                val downloads=(manga.chapters+otherDownloads).filter{it.downloaded}.map{it.key}.toSet()
+                val assignable=state.categories.any{JSONObject(state.categoryMetadata).optJSONObject(it)?.optBoolean("group")!=true}
+                NativeMenu(menu,{menu=false},listOf(
+                    if(manga.url.isNotBlank())listOf(MenuAction(tr("SHARE"),Icons.Outlined.IosShare){share(manga.url)}) else emptyList(),
+                    buildList {
+                        add(MenuSubmenu(tr("MARK_ALL"),sections=listOf(listOf(
+                            MenuAction(tr("READ"),Icons.Outlined.CheckCircleOutline){mark(allListed.map{it.key}.toSet(),true)},
+                            MenuAction(tr("UNREAD"),Icons.Outlined.RemoveCircleOutline){mark(allListed.map{it.key}.toSet(),false)}))))
+                        add(MenuAction(tr("SELECT_CHAPTERS"),Icons.Outlined.CheckCircleOutline){selecting=true})
+                        if(manga.inLibrary && assignable)add(MenuAction(tr("EDIT_CATEGORIES"),Icons.Outlined.Folder){categories=true})
+                        if(manga.inLibrary)add(MenuAction(tr("MIGRATE"),Icons.Outlined.SwapHoriz){vm.navigate("migration",manga.id)})
+                    },
+                    buildList {
+                        add(MenuAction(tr(if(manga.pinned)"UNPIN" else "PIN"),Icons.Outlined.PushPin){vm.run{vm.repo.updateManga(manga.id){it.copy(pinned=!it.pinned)}}})
+                        add(MenuAction(tr("EDIT"),Icons.Outlined.Edit){edit=true})
+                        add(MenuAction(tr("COVER"),Icons.Outlined.Image){cover=true})
+                        if(local)add(MenuAction(tr("IMPORT_FILE"),Icons.Outlined.FileOpen){importing=true})
+                        else add(MenuAction(tr("DOWNLOAD"),Icons.Outlined.Download){download(chapters.filter{!it.completed}.map{it.key}.toSet())})
+                    },
+                    buildList {
+                        if(!local && downloads.isNotEmpty())add(MenuAction(tr("REMOVE_ALL_DOWNLOADS"),Icons.Outlined.DeleteOutline,destructive=true){removal=downloads})
+                        if(local)add(MenuAction(tr("DELETE"),Icons.Outlined.DeleteOutline,destructive=true){removal=manga.chapters.map{it.key}.toSet()})
+                    }))
             }
         }
-        LazyColumn(Modifier.weight(1f),state=chapterList) {
+        // On tablets the details and chapter list keep a phone-like column in the centre instead of stretching edge to edge.
+        LazyColumn(Modifier.weight(1f),state=chapterList,contentPadding=PaddingValues(horizontal=centeredInset(DetailWidth))) {
             item { Row(Modifier.padding(20.dp),verticalAlignment=Alignment.Top) {
                 Cover(manga,vm.repo,Modifier.width(112.dp).height(168.dp).clickable{cover=true})
                 Column(Modifier.weight(1f).padding(start=16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -175,18 +187,66 @@ import java.util.Locale
                     if(chapter.locked && !chapter.downloaded)Icon(Icons.Outlined.Lock,tr("LOCKED"),Modifier.padding(8.dp).size(18.dp))
                     if(chapter.downloaded)Icon(Icons.Outlined.CheckCircleOutline,tr("DOWNLOADED"),Modifier.padding(8.dp).size(20.dp),tint=Pink)
                     else if(!local)IconButton({if(job==null)download(setOf(chapter.key)) else chapterMenu=chapter.key},enabled=!chapter.locked || job!=null){Icon(if(job?.status=="running")Icons.Outlined.Pause else if(job?.status=="failed")Icons.Outlined.ErrorOutline else Icons.Outlined.Download,tr("DOWNLOAD"),tint=Pink)}
-                    IconButton({chapterMenu=chapter.key}){Icon(Icons.Outlined.MoreVert,tr("MORE"),Modifier.size(18.dp))}
+                    Box {
+                        IconButton({chapterMenu=chapter.key}){Icon(Icons.Outlined.MoreVert,tr("MORE"),Modifier.size(18.dp))}
+                        // The iOS chapter context menu: reading, marking, downloads and links, with removal last.
+                        if(chapterMenu==chapter.key) {
+                            val earlier=ChapterListing.chronological(manga).takeWhile{it.key!=chapter.key}.map{it.key}.toSet()
+                            NativeMenu(true,{chapterMenu=null},listOf(
+                                buildList {
+                                    add(MenuHeader(chapterTitle(chapter,displayMode),maxLines=2))
+                                    if(!chapter.locked || chapter.downloaded)add(MenuAction(pt("Read","阅读"),Icons.AutoMirrored.Outlined.MenuBook){vm.read(manga,chapter)})
+                                    add(MenuAction(tr("SELECT"),Icons.Outlined.Checklist){selecting=true;selected=selected+chapter.key})
+                                },
+                                buildList {
+                                    add(MenuAction(tr(if(chapter.completed)"MARK_UNREAD" else "MARK_READ"),if(chapter.completed)Icons.Outlined.RemoveCircleOutline else Icons.Outlined.CheckCircleOutline){mark(setOf(chapter.key),!chapter.completed)})
+                                    if(earlier.isNotEmpty())add(MenuSubmenu(tr("MARK_PREVIOUS"),sections=listOf(listOf(
+                                        MenuAction(tr("READ"),Icons.Outlined.CheckCircleOutline){mark(earlier,true)},
+                                        MenuAction(tr("UNREAD"),Icons.Outlined.RemoveCircleOutline){mark(earlier,false)}))))
+                                    if(local)add(MenuAction(tr("EDIT"),Icons.Outlined.Edit){editChapter=chapter.key})
+                                },
+                                buildList {
+                                    if(chapter.downloaded)add(MenuAction(tr("EXPORT"),Icons.Outlined.SaveAlt){exporting=chapter.key;export.launch("${manga.title.take(40)}-${chapter.number}.cbz")})
+                                    else if(!local && !chapter.locked && job==null)add(MenuAction(tr("DOWNLOAD"),Icons.Outlined.Download){download(setOf(chapter.key))})
+                                    if(job!=null) {
+                                        if(job.status in setOf("queued","running"))add(MenuAction(tr("PAUSE"),Icons.Outlined.Pause){vm.run{service.pause(job.id)}})
+                                        else add(MenuAction(tr("RETRY"),Icons.Outlined.Refresh){vm.run{service.resume(job.id)}})
+                                        add(MenuAction(tr("CANCEL_DOWNLOAD"),Icons.Outlined.Close){vm.run{service.cancel(job.id)}})
+                                    }
+                                },
+                                if(chapter.url.isBlank())emptyList() else listOf(
+                                    MenuAction(tr("OPEN_WEBSITE"),Icons.Outlined.Public){openWebsite(chapter.url)},
+                                    MenuAction(tr("COPY_URL"),Icons.Outlined.Link){(context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText(chapter.title,chapter.url))}),
+                                if(local || chapter.downloaded || job?.status=="failed")listOf(MenuAction(tr(if(local)"REMOVE" else "REMOVE_DOWNLOAD"),Icons.Outlined.DeleteOutline,destructive=true){removal=setOf(chapter.key)}) else emptyList(),
+                                if(chapter.description.isBlank())emptyList() else listOf(MenuHeader(chapter.description,maxLines=6))))
+                        }
+                    }
                 }
                 HorizontalDivider(Modifier.padding(start=20.dp),thickness=.5.dp)
             }
             if(chapters.isEmpty())item{EmptyPage(Icons.AutoMirrored.Outlined.MenuBook,tr("NO_CHAPTERS_AVAILABLE"),"")}
         }
-        if(selecting)Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
-            TextButton({selected=if(selected.containsAll(allListed.map{it.key}))emptySet() else allListed.map{it.key}.toSet()}){Text(tr(if(selected.containsAll(allListed.map{it.key}))"DESELECT_ALL" else "SELECT_ALL"))}
-            if(!local)TextButton({download(selected)}){Text(tr("DOWNLOAD"))}
-            TextButton({mark(selected,true)}){Text(tr("MARK_READ"))};TextButton({mark(selected,false)}){Text(tr("MARK_UNREAD"))}
-            TextButton({removal=selected}){Text(tr(if(local)"DELETE" else "REMOVE_DOWNLOADS"))}
-            TextButton({selecting=false;selected=emptySet()}){Text(tr("DONE"))}
+        // The iOS edit toolbar: select all, a Mark menu for the selection, and one download or remove button.
+        if(selecting) {
+            HorizontalDivider(thickness=.5.dp)
+            Row(Modifier.fillMaxWidth().padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically) {
+                val all=allListed.map{it.key}.toSet()
+                fun finish() { selecting=false;selected=emptySet() }
+                TextButton({selected=if(selected.containsAll(all))emptySet() else all}){Text(tr(if(selected.containsAll(all))"DESELECT_ALL" else "SELECT_ALL"))}
+                Box {
+                    var markMenu by remember{mutableStateOf(false)}
+                    TextButton({markMenu=true},enabled=selected.isNotEmpty()){Text(tr("MARK"))}
+                    NativeMenu(markMenu,{markMenu=false},listOf(listOf(
+                        MenuHeader(if(selected.size==1)tr("1_CHAPTER") else tr("%i_CHAPTERS",selected.size)),
+                        MenuAction(tr("UNREAD"),Icons.Outlined.RemoveCircleOutline){mark(selected,false);finish()},
+                        MenuAction(tr("READ"),Icons.Outlined.CheckCircleOutline){mark(selected,true);finish()})))
+                }
+                Spacer(Modifier.weight(1f))
+                val allDownloaded=selected.isNotEmpty() && (manga.chapters+otherDownloads).filter{it.key in selected}.all{it.downloaded}
+                if(local || allDownloaded)TextButton({removal=selected},enabled=selected.isNotEmpty()){Text(tr(if(local)"DELETE" else "REMOVE"),color=if(selected.isNotEmpty())MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface.copy(alpha=.38f))}
+                else TextButton({download(selected);finish()},enabled=selected.isNotEmpty()){Text(tr("DOWNLOAD"))}
+                TextButton(::finish){Text(tr("DONE"),fontWeight=FontWeight.SemiBold)}
+            }
         }
     }
     if(filters) {
@@ -248,37 +308,6 @@ import java.util.Locale
         })
     }
     if(importing)LocalAppendDialog(vm,manga){importing=false}
-    val selectedChapter=(manga.chapters+otherDownloads).firstOrNull{it.key==chapterMenu}
-    if(selectedChapter!=null) {
-        val job=queue.firstOrNull{it.mangaId==manga.id && it.chapterKey==selectedChapter.key && it.status!="finished"}
-        val summary=listOfNotNull(if(selectedChapter.completed)tr("READ") else if(selectedChapter.readAt>0 && selectedChapter.total>0)"${selectedChapter.page+1} / ${selectedChapter.total}" else tr("UNREAD"),
-            selectedChapter.scanlator.takeIf(String::isNotBlank),selectedChapter.dateUploaded.takeIf{it>0}?.let{DateFormat.getDateInstance(DateFormat.SHORT).format(Date(it))}).joinToString(" · ")
-        OptionSheet(chapterTitle(selectedChapter,displayMode),{chapterMenu=null},subtitle=summary) {
-            val close=LocalSheetClose.current
-            SheetActions(buildList {
-                if(!selectedChapter.locked || selectedChapter.downloaded)add(SheetActionItem(pt("Read","阅读"),Icons.AutoMirrored.Outlined.MenuBook){close();vm.read(manga,selectedChapter)})
-                add(SheetActionItem(tr("SELECT"),Icons.Outlined.Checklist){selecting=true;selected=selected+selectedChapter.key;close()})
-                add(SheetActionItem(tr(if(selectedChapter.completed)"MARK_UNREAD" else "MARK_READ"),if(selectedChapter.completed)Icons.Outlined.RadioButtonUnchecked else Icons.Outlined.CheckCircleOutline){mark(setOf(selectedChapter.key),!selectedChapter.completed);close()})
-                add(SheetActionItem(tr("MARK_PREVIOUS"),Icons.Outlined.DoneAll){val before=ChapterListing.chronological(manga).takeWhile{it.key!=selectedChapter.key}.map{it.key}.toSet();mark(before,true);close()})
-                if(local)add(SheetActionItem(tr("EDIT"),Icons.Outlined.Edit){editChapter=selectedChapter.key;close()})
-            })
-            val downloads=buildList {
-                if(selectedChapter.downloaded)add(SheetActionItem(tr("EXPORT"),Icons.Outlined.SaveAlt){exporting=selectedChapter.key;close();export.launch("${manga.title.take(40)}-${selectedChapter.number}.cbz")})
-                else if(!local && !selectedChapter.locked && job==null)add(SheetActionItem(tr("DOWNLOAD"),Icons.Outlined.Download){close();download(setOf(selectedChapter.key))})
-                if(job!=null) {
-                    if(job.status in setOf("queued","running"))add(SheetActionItem(tr("PAUSE"),Icons.Outlined.Pause){vm.run{service.pause(job.id)};close()})
-                    else add(SheetActionItem(tr("RETRY"),Icons.Outlined.Refresh){vm.run{service.resume(job.id)};close()})
-                    add(SheetActionItem(tr("CANCEL_DOWNLOAD"),Icons.Outlined.Close){vm.run{service.cancel(job.id)};close()})
-                }
-                if(local || selectedChapter.downloaded || job?.status=="failed")add(SheetActionItem(tr(if(local)"REMOVE" else "REMOVE_DOWNLOAD"),Icons.Outlined.DeleteOutline,destructive=true){removal=setOf(selectedChapter.key);close()})
-            }
-            if(downloads.isNotEmpty()){Spacer(Modifier.height(12.dp));SheetActions(downloads)}
-            if(selectedChapter.url.isNotBlank()){Spacer(Modifier.height(12.dp));SheetActions(listOf(
-                SheetActionItem(tr("OPEN_WEBSITE"),Icons.Outlined.Public){openWebsite(selectedChapter.url)},
-                SheetActionItem(tr("COPY_URL"),Icons.Outlined.Link){(context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText(selectedChapter.title,selectedChapter.url));close()}))}
-            if(selectedChapter.description.isNotBlank())Text(selectedChapter.description,Modifier.padding(start=20.dp,end=20.dp,top=14.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
     manga.chapters.firstOrNull{it.key==editChapter}?.let { chapter -> LocalChapterEditDialog(vm,manga,chapter){editChapter=null} }
     removal?.let { keys ->AlertDialog({removal=null},title={Text(tr(if(local)"DELETE" else "REMOVE_DOWNLOADS"))},text={Text(tr("REMOVE_DOWNLOADS_CONFIRM"))},confirmButton={TextButton({removal=null;vm.run {
         keys.forEach { key ->if(local)LocalLibrary.deleteChapter(vm.repo,manga.id,key) else service.remove(manga.id,key) }
@@ -308,8 +337,8 @@ private fun statusKey(status:Int)=when(status){1->"STATUS_ONGOING";2->"STATUS_CO
         OutlinedTextField(artist,{artist=it},label={Text(tr("ARTIST"))});OutlinedTextField(description,{description=it},label={Text(tr("DESCRIPTION"))})
         OutlinedTextField(tags,{tags=it},label={Text(tr("TAG"))});OutlinedTextField(language,{language=it},label={Text(tr("LANGUAGE"))})
         OutlinedTextField(url,{url=it},label={Text(tr("URL"))})
-        Text(tr("STATUS"),style=MaterialTheme.typography.titleSmall);Row(Modifier.horizontalScroll(rememberScrollState())){(0..6).forEach { value ->FilterChip(status==value,{status=value},{Text(tr(statusKey(value)))},Modifier.padding(end=8.dp))}}
-        Text(tr("READING_MODE"),style=MaterialTheme.typography.titleSmall);Row(Modifier.horizontalScroll(rememberScrollState())){listOf("auto" to "AUTOMATIC","rtl" to "RTL","ltr" to "LTR","vertical" to "VERTICAL","webtoon" to "WEBTOON").forEach{(value,key)->FilterChip(viewer==value,{viewer=value},{Text(tr(key))},Modifier.padding(end=8.dp))}}
+        MenuPicker(tr("STATUS"),(0..6).map{it to tr(statusKey(it))},status){status=it}
+        MenuPicker(tr("READING_MODE"),listOf("auto" to "AUTOMATIC","rtl" to "RTL","ltr" to "LTR","vertical" to "VERTICAL","webtoon" to "WEBTOON").map{(value,key)->value to tr(key)},viewer){viewer=it}
     }},confirmButton={TextButton({save(title.trim(),author,artist,description,tags.split(',').map(String::trim).filter(String::isNotBlank),status,viewer,language.trim(),url.trim())},enabled=title.isNotBlank()){Text(tr("SAVE"))}},dismissButton={TextButton(dismiss){Text(tr("CANCEL"))}})
 }
 

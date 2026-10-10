@@ -266,8 +266,14 @@ private class SourceBrowseMemoryHolder {
     Column(Modifier.fillMaxSize()) {
         PageTitle(source.name, vm::back) {
             IconButton({ showFilters = true }, enabled = definitions.isNotEmpty()) { Icon(Icons.Outlined.FilterList, tr("FILTERS")) }
-            IconButton({ showSettings = true }) { Icon(Icons.Outlined.Settings, tr("SOURCE_SETTINGS")) }
-            IconButton({ execute { browserUrl = withContext(Dispatchers.IO) { runtime?.baseUrl() ?: source.baseUrl } } }) { Icon(Icons.Outlined.Public, tr("OPEN_WEBSITE")) }
+            // Settings and the website share the source's "more" menu, as on iOS.
+            Box {
+                var sourceMenu by remember { mutableStateOf(false) }
+                IconButton({ sourceMenu = true }) { Icon(Icons.Outlined.MoreHoriz, tr("MORE_BARBUTTON")) }
+                NativeMenu(sourceMenu, { sourceMenu = false }, listOf(listOf(
+                    MenuAction(tr("SOURCE_SETTINGS"), Icons.Outlined.Settings) { showSettings = true },
+                    MenuAction(tr("OPEN_WEBSITE"), Icons.Outlined.Public) { execute { browserUrl = withContext(Dispatchers.IO) { runtime?.baseUrl() ?: source.baseUrl } } })))
+            }
         }
         OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(horizontal = 16.dp), singleLine = true,
             placeholder = { Text(tr("SEARCH")) }, leadingIcon = { Icon(Icons.Outlined.Search, null) },
@@ -467,7 +473,7 @@ private fun sourceSettingsSnapshot(preferences: SourcePreferences?, settings: Li
     val renderedValues = remember(runtime, displayedSettings, settingsRevision) { sourceSettingsSnapshot(runtime?.preferences, displayedSettings) }
     Column(Modifier.fillMaxSize()) {
         PageTitle(pages.lastOrNull()?.optString("title")?.let { tr(it) } ?: tr("SOURCE_SETTINGS"), { if (pages.isNotEmpty()) pages = pages.dropLast(1) else onBack() })
-        LazyColumn(Modifier.weight(1f)) {
+        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = centeredInset(ReadableWidth))) {
             item { SettingRow(source.name, value = if (source.type == "wasm") runCatching { "v${vm.repo.client.runtimes.installed(sourceId).version}" }.getOrDefault("") else source.type.replaceFirstChar(Char::uppercase)) }
             fun androidx.compose.foundation.lazy.LazyListScope.rows(settings: List<JSONObject>) { settings.forEach { s ->
                 val rendered = renderedValues.getValue(s); val enabled = rendered.enabled

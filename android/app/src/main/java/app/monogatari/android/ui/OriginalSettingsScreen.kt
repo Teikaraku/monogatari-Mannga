@@ -48,7 +48,7 @@ import org.json.JSONObject
     }
     val notification = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> vm.run { store.put("Library.notifyNewChapters", granted) } }
     Column {
-        PageTitle(tr(if (page.isBlank()) titleKey else page), vm::back)
+        PageTitle(tr(if (page.isBlank()) titleKey else page), vm::back, contentWidth = ReadableWidth)
         Column(Modifier.fillMaxSize().background(if (MaterialTheme.colorScheme.background == androidx.compose.ui.graphics.Color.White) GroupGray else androidx.compose.ui.graphics.Color.Black).verticalScroll(scroll)) {
             if (page.isBlank()) grouped.flatMap { it.optJSONArray("parentPages").strings() }.distinct().forEach { child ->
                 SettingGroup { SettingRow(tr(child), onClick = { vm.navigate("originalSettings", "$group|$child") }) }

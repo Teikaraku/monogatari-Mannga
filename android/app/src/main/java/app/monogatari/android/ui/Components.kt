@@ -31,6 +31,8 @@ import androidx.compose.ui.semantics.*
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.coerceAtLeast
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.monogatari.android.R
@@ -42,19 +44,33 @@ import kotlinx.coroutines.withContext
 
 val Pink = Color(0xFFFF2D55)
 val GroupGray = Color(0xFFF2F2F7)
-@Composable fun PageTitle(title: String, back: (() -> Unit)? = null, actions: @Composable RowScope.() -> Unit = {}) {
+
+/** Width of settings-style grouped pages on tablets, including the groups' side padding. */
+val ReadableWidth = 752.dp
+/** Width of detail pages on tablets; wide enough for the cover header and chapter rows. */
+val DetailWidth = 840.dp
+/** Width of the current window in dp; follows rotation and split screen. */
+@Composable fun windowWidth(): Dp = LocalConfiguration.current.screenWidthDp.dp
+/** Side inset that centres content no wider than [max]. Phones get zero and keep their layout. */
+@Composable fun centeredInset(max: Dp): Dp = ((windowWidth() - max) / 2).coerceAtLeast(0.dp)
+/** Centres a block and caps its width on tablets; on phones the block keeps the full width. */
+fun Modifier.readableWidth(max: Dp = ReadableWidth): Modifier = fillMaxWidth().wrapContentWidth(Alignment.CenterHorizontally).widthIn(max = max)
+
+@Composable fun PageTitle(title: String, back: (() -> Unit)? = null, contentWidth: Dp? = null, actions: @Composable RowScope.() -> Unit = {}) {
+    // Pages with centred content on tablets align their title with it.
+    val inset = contentWidth?.let { centeredInset(it) } ?: 0.dp
     Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)) {
         Row(Modifier.fillMaxWidth().height(48.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             if (back != null) IconButton(onClick = back) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, tr("CANCEL"), tint = Pink) }
             Spacer(Modifier.weight(1f)); actions()
         }
-        Text(title, Modifier.padding(start = 20.dp, end = 20.dp, bottom = 12.dp), fontSize = 34.sp, fontWeight = FontWeight.Bold,
+        Text(title, Modifier.padding(start = 20.dp + inset, end = 20.dp + inset, bottom = 12.dp), fontSize = 34.sp, fontWeight = FontWeight.Bold,
             maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
-@Composable fun SearchField(value: String, placeholder: String, onSearch: (() -> Unit)? = null, onChange: (String) -> Unit) {
+@Composable fun SearchField(value: String, placeholder: String, onSearch: (() -> Unit)? = null, modifier: Modifier = Modifier, onChange: (String) -> Unit) {
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
-    TextField(value, onChange, Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), singleLine = true,
+    TextField(value, onChange, modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), singleLine = true,
         keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = if (onSearch != null) androidx.compose.ui.text.input.ImeAction.Search else androidx.compose.ui.text.input.ImeAction.Done),
         keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { onSearch?.invoke(); keyboard?.hide() }, onDone = { keyboard?.hide() }),
         placeholder = { Text(placeholder) }, leadingIcon = { Icon(Icons.Outlined.Search, null) },
@@ -130,7 +146,7 @@ val GroupGray = Color(0xFFF2F2F7)
         } else Modifier)
     val offlineChapterKeys = remember(state.records) { org.json.JSONObject(state.records).optJSONArray("history").objects().filter { it.optJSONObject("_chapter")?.optBoolean("downloaded") == true }
         .groupBy { it.optString("sourceId") to it.optString("mangaId") }.mapValues { (_, rows) -> rows.map { it.optString("chapterId") }.toSet() } }
-    if (state.preferences.listView) LazyColumn(collectionModifier, state = list, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    if (state.preferences.listView) LazyColumn(collectionModifier, state = list, contentPadding = PaddingValues(horizontal = 16.dp + centeredInset(DetailWidth), vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         items(manga, key = { it.id }) { m ->
             DisposableEffect(m.id) { onDispose { bounds.remove(m.id) } }
             val checked = m.id in selection?.selected.orEmpty()
@@ -178,7 +194,7 @@ val GroupGray = Color(0xFFF2F2F7)
         Modifier.size(24.dp).background(Color.White, androidx.compose.foundation.shape.CircleShape), tint = if (selected) Pink else Color.Gray)
 }
 @Composable fun SettingGroup(title: String = "", footer: String = "", content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+    Column(Modifier.readableWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
         if (title.isNotEmpty()) Text(title, Modifier.padding(start = 16.dp, bottom = 7.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Column(Modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface), content = content)
         if (footer.isNotEmpty()) Text(footer, Modifier.padding(start = 16.dp, end = 16.dp, top = 7.dp),

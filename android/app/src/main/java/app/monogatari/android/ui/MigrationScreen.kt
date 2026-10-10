@@ -22,7 +22,7 @@ import app.monogatari.android.library.MangaMigration
     var confirm by remember { mutableStateOf(false) }
     Column {
         PageTitle(tr("MIGRATE"), vm::back)
-        if (selectedSource == null) LazyColumn(contentPadding = PaddingValues(16.dp)) {
+        if (selectedSource == null) LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp + centeredInset(DetailWidth), vertical = 16.dp)) {
             item { SettingRow(tr("COPY"), trailing = { Switch(copy, { copy = it }) }) }
             items(state.sources.filter { it.type != "local" }) { source -> SettingRow(source.name, onClick = {
                 selectedSource = source.id; vm.search(source.id, query)

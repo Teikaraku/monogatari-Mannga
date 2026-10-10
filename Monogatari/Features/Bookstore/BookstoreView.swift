@@ -13,6 +13,27 @@ import SwiftUI
 
 let bookstorePink = Color(uiColor: .systemPink)
 
+/// Window width of the bookstore pages; components size themselves from it instead of the screen.
+private struct BookstoreWidthKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 390
+}
+
+extension EnvironmentValues {
+    var bookstoreWidth: CGFloat {
+        get { self[BookstoreWidthKey.self] }
+        set { self[BookstoreWidthKey.self] = newValue }
+    }
+}
+
+/// Phones keep their layout; iPads and wide windows keep phone proportions and show more items, as on Android.
+enum BookstoreLayout {
+    static func isWide(_ width: CGFloat) -> Bool { width >= 600 }
+    static func bannerWidth(_ width: CGFloat) -> CGFloat { min(max(width - 40, 0), 520) }
+    static func bannerHeight(_ width: CGFloat) -> CGFloat { max(bannerWidth(width) / 1.95, 190) }
+    static func gridColumns(_ width: CGFloat) -> Int { isWide(width) ? 6 : 3 }
+    static func rankWidth(_ width: CGFloat) -> CGFloat { min(width * 0.8, 380) }
+}
+
 @MainActor
 final class BookstoreViewModel: ObservableObject {
     @Published var home: CopyHome?
@@ -80,13 +101,21 @@ struct BookstoreView: View {
     @EnvironmentObject private var path: NavigationCoordinator
 
     var body: some View {
+        GeometryReader { proxy in
+            content(width: proxy.size.width)
+                .environment(\.bookstoreWidth, proxy.size.width)
+        }
+    }
+
+    private func content(width: CGFloat) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if let features = model.home?.features, !features.isEmpty {
                     CopyFeaturePager(features: features)
                 } else if model.home == nil && model.error == nil {
                     RoundedRectangle(cornerRadius: 18).fill(Color(uiColor: .secondarySystemBackground))
-                        .frame(height: 190).padding(.horizontal, 20)
+                        .frame(width: BookstoreLayout.bannerWidth(width), height: BookstoreLayout.bannerHeight(width))
+                        .padding(.horizontal, 20)
                 }
                 shortcuts
                 if let error = model.error {
@@ -129,6 +158,8 @@ struct BookstoreView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 14)
+        // Five shortcuts spread over an iPad's width would drift apart; they keep a phone-sized row.
+        .frame(maxWidth: 600, alignment: .leading)
     }
 
     private func shortcut(_ title: String, _ icon: String, _ mode: String) -> some View {
@@ -228,38 +259,49 @@ struct CopyShelfHeader: View {
 struct CopyFeaturePager: View {
     let features: [CopyFeature]
     @EnvironmentObject private var path: NavigationCoordinator
+    @Environment(\.bookstoreWidth) private var width
     @State private var page = 0
+    @State private var scrolledPage: Int? = 0
     private let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
 
     var body: some View {
+        let height = BookstoreLayout.bannerHeight(width)
         VStack(spacing: 10) {
-            TabView(selection: $page) {
-                ForEach(Array(features.enumerated()), id: \.offset) { index, feature in
-                    Button {
-                        path.push(MangaViewController(source: .copyManga, manga: feature.comic.manga, parent: path.rootViewController))
-                    } label: {
-                        ZStack(alignment: .bottomLeading) {
-                            Color(uiColor: .secondarySystemBackground)
-                                .overlay(SourceImageView(source: .copyManga, imageUrl: feature.image, placeholder: "BannerPlaceholder"))
-                                .clipped()
-                            LinearGradient(colors: [.clear, .black.opacity(0.68)], startPoint: .top, endPoint: .bottom)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(feature.comic.manga.title).font(.system(size: 19, weight: .bold)).lineLimit(1)
-                                Text(feature.title).font(.system(size: 12)).opacity(0.9).lineLimit(2)
+            if BookstoreLayout.isWide(width) {
+                // Wide windows show several phone-shaped banners side by side instead of one stretched banner.
+                ScrollViewReader { reader in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(spacing: 12) {
+                            ForEach(Array(features.enumerated()), id: \.offset) { index, feature in
+                                banner(feature).frame(width: BookstoreLayout.bannerWidth(width), height: height).id(index)
                             }
-                            .foregroundColor(.white)
-                            .padding(16)
                         }
-                        .frame(height: 190)
-                        .clipShape(RoundedRectangle(cornerRadius: 18))
                         .padding(.horizontal, 20)
+                        .scrollTargetLayoutPlease()
                     }
-                    .buttonStyle(.plain)
-                    .tag(index)
+                    .scrollViewAlignedPlease()
+                    .scrollPositionPlease(id: $scrolledPage, anchor: .leading)
+                    .onChange(of: page) { value in
+                        guard scrolledPage != value else { return }
+                        withAnimation { reader.scrollTo(value, anchor: .leading) }
+                    }
                 }
+                .frame(height: height)
+                .onChange(of: scrolledPage) { value in
+                    if let value { page = value }
+                }
+            } else {
+                TabView(selection: $page) {
+                    ForEach(Array(features.enumerated()), id: \.offset) { index, feature in
+                        banner(feature)
+                            .frame(height: height)
+                            .padding(.horizontal, 20)
+                            .tag(index)
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .frame(height: height)
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            .frame(height: 190)
             HStack(spacing: 6) {
                 ForEach(features.indices, id: \.self) { index in
                     Capsule()
@@ -274,6 +316,27 @@ struct CopyFeaturePager: View {
             guard features.count > 1 else { return }
             withAnimation { page = (page + 1) % features.count }
         }
+    }
+
+    private func banner(_ feature: CopyFeature) -> some View {
+        Button {
+            path.push(MangaViewController(source: .copyManga, manga: feature.comic.manga, parent: path.rootViewController))
+        } label: {
+            ZStack(alignment: .bottomLeading) {
+                Color(uiColor: .secondarySystemBackground)
+                    .overlay(SourceImageView(source: .copyManga, imageUrl: feature.image, placeholder: "BannerPlaceholder"))
+                    .clipped()
+                LinearGradient(colors: [.clear, .black.opacity(0.68)], startPoint: .top, endPoint: .bottom)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(feature.comic.manga.title).font(.system(size: 19, weight: .bold)).lineLimit(1)
+                    Text(feature.title).font(.system(size: 12)).opacity(0.9).lineLimit(2)
+                }
+                .foregroundColor(.white)
+                .padding(16)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -321,17 +384,20 @@ struct CopyBookCard: View {
     }
 }
 
+/// Three columns on phones; six on iPads and wide windows, so the six-item shelves fill one row at a familiar cover size.
 struct CopyBookGrid: View {
     let entries: [CopyComic]
-    var columns = 3
+    @Environment(\.bookstoreWidth) private var width
 
     var body: some View {
+        let columns = BookstoreLayout.gridColumns(width)
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .top), count: columns), alignment: .leading, spacing: 16) {
             ForEach(entries) { comic in
                 CopyBookCard(comic: comic)
             }
         }
         .padding(.horizontal, 20)
+        .frame(maxWidth: 1000, alignment: .leading)
     }
 }
 
@@ -370,6 +436,7 @@ struct CopyTwoRowShelf: View {
 struct CopyRankingShelf: View {
     let rankings: [CopyRanking]
     @EnvironmentObject private var path: NavigationCoordinator
+    @Environment(\.bookstoreWidth) private var width
     @State private var period = "day"
 
     var body: some View {
@@ -390,7 +457,7 @@ struct CopyRankingShelf: View {
                 LazyHGrid(rows: Array(repeating: GridItem(.fixed(78), spacing: 8), count: rows), spacing: 16) {
                     ForEach(Array(current.entries.enumerated()), id: \.element.id) { index, comic in
                         CopyRankRow(comic: comic, position: index + 1)
-                            .frame(width: UIScreen.main.bounds.width * 0.8)
+                            .frame(width: BookstoreLayout.rankWidth(width))
                     }
                 }
                 .padding(.horizontal, 20)

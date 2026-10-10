@@ -12,6 +12,8 @@ import androidx.compose.ui.platform.LocalConfiguration
 import app.monogatari.android.ui.tr
 import app.monogatari.android.ui.SettingRow
 import app.monogatari.android.ui.CallerContextDropdownMenu
+import app.monogatari.android.ui.MenuAction
+import app.monogatari.android.ui.NativeMenu
 import app.monogatari.android.ui.OptionSheet
 import kotlinx.coroutines.launch
 
@@ -121,7 +123,8 @@ import kotlinx.coroutines.launch
 @Composable private fun ReaderChoice(label: String, selected: String, values: List<Pair<String, String>>, change: (String) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     Box { SettingRow(readerLabel(label), value = readerLabel(values.firstOrNull { it.first == selected }?.second ?: selected), onClick = { expanded = true })
-        CallerContextDropdownMenu(expanded, { expanded = false }) { values.forEach { (key, title) -> DropdownMenuItem({ Text(readerLabel(title)) }, { expanded = false; change(key) }) } } }
+        // A picker menu with the current choice checked, like the iOS reader settings.
+        NativeMenu(expanded, { expanded = false }, listOf(values.map { (key, title) -> MenuAction(readerLabel(title), checked = key == selected) { change(key) } })) }
 }
 
 @Composable private fun readerLabel(value: String): String {
