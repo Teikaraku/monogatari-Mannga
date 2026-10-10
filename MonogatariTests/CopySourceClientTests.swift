@@ -217,6 +217,20 @@ struct CopySourceClientTests {
         #expect(config.allowsConstrainedNetworkAccess)
     }
 
+    @Test func cellularRestrictionsAreNotMisreportedAsCertificateFailures() async {
+        let failure = URLError(.notConnectedToInternet,
+            userInfo: [NSURLErrorNetworkUnavailableReasonKey: URLError.NetworkUnavailableReason.cellular.rawValue])
+        let fixture = CopyFixture { _, _ in .failure(failure) }
+        do {
+            _ = try await fixture.client.catalog(.init(), page: 1)
+            Issue.record("Cellular restriction must remain visible")
+        } catch {
+            #expect(error.localizedDescription.contains("蜂窝权限"))
+            #expect(error.localizedDescription.contains("-1009"))
+            #expect(!error.localizedDescription.contains("安全连接失败"))
+        }
+    }
+
     @Test func httpAuthorizationFailuresAreNotRetriedAsTlsFailures() async {
         let fixture = CopyFixture { _, _ in .status(401) }
         do {

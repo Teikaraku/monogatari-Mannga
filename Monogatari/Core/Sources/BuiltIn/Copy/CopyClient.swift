@@ -222,8 +222,8 @@ struct CopyClient: Sendable {
         let reason: String
         if failure.domain == NSURLErrorDomain && tlsCodes.contains(where: { $0.rawValue == failure.code }) {
             reason = "安全连接失败（TLS，错误 \(failure.code)），请检查网络或稍后重试"
-        } else if let unavailable = (error as? URLError)?.networkUnavailableReason, unavailable == .cellularDenied {
-            reason = "系统禁止物语使用蜂窝数据，请在 iPhone 设置中允许此应用使用蜂窝网络（错误 \(failure.code)）"
+        } else if let unavailable = (error as? URLError)?.networkUnavailableReason, unavailable == .cellular {
+            reason = "当前请求无法使用蜂窝数据，请在 iPhone 设置中检查物语的蜂窝权限（错误 \(failure.code)）"
         } else {
             reason = failure.domain == NSURLErrorDomain ? "\(error.localizedDescription)（错误 \(failure.code)）" : error.localizedDescription
         }
