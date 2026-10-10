@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import ImageIO
+import AidokuRunner
 @testable import Monogatari
 
 /// Opt-in network evidence from Apple's real URLSession, separate from deterministic fixtures.

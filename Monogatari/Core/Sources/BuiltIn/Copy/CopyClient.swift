@@ -127,16 +127,20 @@ struct CopyClient: Sendable {
     private let contentAlternates: [URL]
     private let contentRoute = CopyContentRoute()
     private let searchBases: [URL]
+    private let searchApiBase: URL?
+    private let searchRoutes = CopySearchRoutes()
     private static let sharedPolicy = CopyRequestPolicy()
     private let policy = Self.sharedPolicy
     private let readCache = CopyReadCache()
+    private let metadataCache = CopyMetadataCache()
 
     init(session: URLSession = Self.networkSession, browseBase: URL = Self.api, contentBase: URL = Self.contentApi,
-         searchBases: [URL] = [Self.mainlandWebsite, Self.website], contentAlternates: [URL]? = nil) {
+         searchBases: [URL]? = nil, contentAlternates: [URL]? = nil, searchApiBase: URL? = nil) {
         self.session = session
         self.browseBase = browseBase
         self.contentBase = contentBase
-        self.searchBases = searchBases
+        self.searchBases = searchBases ?? [Self.mainlandWebsite, Self.website]
+        self.searchApiBase = searchApiBase ?? (searchBases == nil ? Self.contentBackup : nil)
         self.contentAlternates = contentAlternates ?? (contentBase.host == Self.contentApi.host ? [Self.contentBackup] : [])
     }
 
@@ -496,7 +500,7 @@ struct CopyClient: Sendable {
             case "search":
                 let keyword = query.keyword.trimmingCharacters(in: .whitespacesAndNewlines)
                 if keyword.isEmpty { return CopyPage(entries: [], more: false) }
-                json = try await search(keyword, limit: limit, offset: offset)
+                json = try await search(keyword, limit: limit, offset: offset, page: page)
             case "ranking":
                 json = try await result(url(browseBase, "api/v3/ranks", [
                     ("limit", String(limit)), ("offset", offset), ("type", "1"),
@@ -517,13 +521,24 @@ struct CopyClient: Sendable {
         return CopyPage(entries: entries, more: hasMore(json, count: entries.count, page: page, limit: limit))
     }
 
-    private func search(_ keyword: String, limit: Int, offset: String) async throws -> [String: Any] {
+    private func search(_ keyword: String, limit: Int, offset: String, page: Int) async throws -> [String: Any] {
+        let selection = await searchRoutes.begin(keyword, restart: page == 1)
+        if page > 1, searchApiBase != nil, selection.endpoint == nil { throw CopyError.message("搜索状态已失效，请重新搜索。") }
+        let defaults = (searchApiBase.map { [CopySearchEndpoint(base: $0, api: true)] } ?? []) + searchBases.map { CopySearchEndpoint(base: $0, api: false) }
+        let choices: [CopySearchEndpoint]
+        if page > 1, let selected = selection.endpoint {
+            choices = [selected] + defaults.filter { $0 != selected && $0.api == selected.api }
+        } else { choices = defaults }
         var failures: [String] = []
-        for (index, base) in searchBases.enumerated() {
-            let address = try url(base, "api/kb/web/searchcl/comics", [
-                ("q", keyword), ("q_type", ""), ("platform", "2"), ("limit", String(limit)), ("offset", offset)
+        for (index, endpoint) in choices.enumerated() {
+            let address = try url(endpoint.base, endpoint.api ? "api/v3/search/comic" : "api/kb/web/searchcl/comics", [
+                ("q", keyword), ("q_type", ""), ("platform", endpoint.api ? "3" : "2"), ("limit", String(limit)), ("offset", offset)
             ])
-            do { return try await requestWithRetry(address, label: "搜索", content: false) }
+            do {
+                let data = try await requestWithRetry(address, label: "搜索", content: endpoint.api)
+                try await searchRoutes.selected(keyword, token: selection.token, endpoint: endpoint)
+                return data
+            }
             catch {
                 try Task.checkCancellation()
                 if error is CancellationError { throw error }
@@ -534,7 +549,7 @@ struct CopyClient: Sendable {
                 else { eligible = failure.domain == NSURLErrorDomain }
                 guard eligible else { throw error }
                 failures.append(connectionFailure(address, label: "搜索", error: error))
-                if index == searchBases.count - 1 { throw CopyError.message(failures.joined(separator: "\n")) }
+                if index == choices.count - 1 { throw CopyError.message(failures.joined(separator: "\n")) }
             }
         }
         throw CopyError.message("没有可用的搜索地址")
@@ -556,24 +571,30 @@ struct CopyClient: Sendable {
     // MARK: Details
 
     func details(key: String) async throws -> AidokuRunner.Manga {
+        try await snapshot(key: key).manga
+    }
+
+    private func snapshot(key: String) async throws -> CopyMangaSnapshot {
         let comicKey = try pathKey(key)
-        let json = try await result(url(contentBase, "api/v3/comic2/\(comicKey)", content: true), label: "漫画详情", content: true)
-        guard let raw = json["comic"] as? [String: Any], let entry = comic(raw) else { throw CopyError.message("\(Self.name)没有返回漫画详情") }
-        return entry.manga
+        let address = try url(contentBase, "api/v3/comic2/\(comicKey)", content: true)
+        return try await metadataCache.value(address) {
+            let json = try await self.result(address, label: "漫画详情", content: true)
+            guard let raw = json["comic"] as? [String: Any], let entry = self.comic(raw) else { throw CopyError.message("\(Self.name)没有返回漫画详情") }
+            var groups: [(String, String)] = []
+            if let value = json["groups"] as? [String: Any] {
+                groups = value.keys.sorted().map { groupKey in
+                    ((value[groupKey] as? [String: Any])?["name"] as? String ?? groupKey, groupKey)
+                }
+                groups.sort { $0.1 == "default" && $1.1 != "default" }
+            }
+            if groups.isEmpty { groups = [("", "default")] }
+            return CopyMangaSnapshot(manga: entry.manga, groups: groups)
+        }
     }
 
     func chapters(key: String) async throws -> [AidokuRunner.Chapter] {
         let comicKey = try pathKey(key)
-        let json = try await result(url(contentBase, "api/v3/comic2/\(comicKey)", content: true), label: "漫画详情", content: true)
-        var groups: [(String, String)] = []
-        if let value = json["groups"] as? [String: Any] {
-            groups = value.keys.sorted().map { groupKey in
-                ((value[groupKey] as? [String: Any])?["name"] as? String ?? groupKey, groupKey)
-            }
-            // The default group lists the main chapters; keep it first like the website.
-            groups.sort { $0.1 == "default" && $1.1 != "default" }
-        }
-        if groups.isEmpty { groups = [("", "default")] }
+        let groups = try await snapshot(key: key).groups
         var chapters: [(chapter: AidokuRunner.Chapter, date: Double, group: Int, index: Double)] = []
         var seenKeys = Set<String>()
         for (groupIndex, group) in groups.enumerated() {

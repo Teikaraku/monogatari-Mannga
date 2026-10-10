@@ -34,8 +34,11 @@ class CopyNetworkInstrumentedTest {
             .newBuilder().addNetworkInterceptor { chain ->
                 val response = chain.proceed(chain.request())
                 if (chain.request().url.encodedPath.endsWith("homeIndex")) {
+                    val wire = response.peekBody(1_000_000).bytes()
+                    val decoded = if (response.header("Content-Encoding") == "gzip")
+                        java.util.zip.GZIPInputStream(wire.inputStream()).use { SourceHost.readBounded(it, 20 * 1024 * 1024) } else wire
                     val record = JSONObject().put("protocol", response.protocol.toString()).put("http", response.code).put("url", chain.request().url.toString())
-                        .put("body", response.peekBody(1_000_000).string())
+                        .put("body", decoded.toString(Charsets.UTF_8))
                     val headers = JSONObject()
                     for (name in listOf("User-Agent", "Accept", "Accept-Language", "Accept-Encoding", "Cache-Control", "version", "platform", "region"))
                         headers.put(name, chain.request().header(name))

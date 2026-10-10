@@ -105,6 +105,36 @@ private final class CopyAttemptCounter: @unchecked Sendable {
 struct CopySourceClientTests {
     private let comic = #"{"name":"Fixture comic","path_word":"fixture-comic","cover":"https://images.example/cover.jpg"}"#
 
+    @Test func detailsAndChapterGroupsShareOneMetadataRequest() async throws {
+        let fixture = CopyFixture { request, _ in
+            request.url!.path.contains("/comic2/") ? .json("{\"code\":200,\"results\":{\"comic\":\(comic),\"groups\":{\"default\":{}}}}") :
+                .json(#"{"code":200,"results":{"list":[{"uuid":"one","index":0,"name":"第1话"}],"total":1}}"#)
+        }
+        let client = fixture.client
+        async let details = client.details(key: "fixture-comic")
+        async let chapters = client.chapters(key: "fixture-comic")
+        let (manga, list) = try await (details, chapters)
+        #expect(manga.key == "fixture-comic" && list.count == 1)
+        #expect(fixture.requests.filter { $0.url?.path.contains("/comic2/") == true }.count == 1)
+        #expect(fixture.requests.count == 2)
+    }
+
+    @Test func searchApiFallbackKeepsTheChosenScopeOnLaterPages() async throws {
+        let fixture = CopyFixture { request, backup in
+            if !backup { return .failure(URLError(.secureConnectionFailed)) }
+            let offset = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!.queryItems!.first { $0.name == "offset" }!.value!
+            return .json("{\"code\":200,\"results\":{\"list\":[\(comic)],\"total\":31,\"offset\":\(offset),\"limit\":30}}")
+        }
+        let client = CopyClient(session: fixture.session, browseBase: fixture.content, contentBase: fixture.content,
+            searchBases: [fixture.content], searchApiBase: fixture.browse)
+        let query = CopyQuery(kind: "search", keyword: "金牌得主")
+        #expect(try await client.catalog(query, page: 1).more)
+        let second = try await client.catalog(query, page: 2)
+        #expect(!second.more)
+        #expect(fixture.requests.filter { $0.url?.host == fixture.browse.host }.count == 2)
+        #expect(fixture.requests.last?.url?.path == "/api/kb/web/searchcl/comics")
+    }
+
     @Test func readingConnectionFailuresUseTheVerifiedContentRouteAndKeepItForNextChapter() async throws {
         let body = #"{"code":200,"results":{"chapter":{"contents":[{"url":"https://images.example/page.webp"}]}}}"#
         let fixture = CopyFixture { _, backup in backup ? .json(body) : .failure(URLError(.secureConnectionFailed)) }
@@ -167,7 +197,7 @@ struct CopySourceClientTests {
             bundle.url(forResource: "copy-tolove-chapters", withExtension: "json", subdirectory: "Fixtures"))
         let body = try String(contentsOf: address, encoding: .utf8)
         let fixture = CopyFixture { request, _ in
-            request.url!.path.contains("/comic2/") ? .json(#"{"code":200,"results":{"groups":{"default":{"name":"默認"}}}}"#) : .json(body)
+            request.url!.path.contains("/comic2/") ? .json("{\"code\":200,\"results\":{\"comic\":\(comic),\"groups\":{\"default\":{\"name\":\"默認\"}}}}") : .json(body)
         }
         let chapters = try await fixture.client.chapters(key: "chubaowangnv")
         let expected = (1...18).reversed().map { String(format: "D%02d卷", $0) } +

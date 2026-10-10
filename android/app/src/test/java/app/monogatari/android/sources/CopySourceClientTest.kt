@@ -22,6 +22,31 @@ import java.util.concurrent.atomic.AtomicInteger
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class CopySourceClientTest {
+    @Test fun searchApiIsPreferredAndPaginationKeepsTheFallbackSearchScope() {
+        MockWebServer().use { api -> MockWebServer().use { web ->
+            val attempts = AtomicInteger()
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                if (chain.request().url.port == api.port) { attempts.incrementAndGet(); throw SSLHandshakeException("API route unavailable") }
+                chain.proceed(chain.request())
+            }.build()
+            web.enqueue(response("""{"code":200,"results":{"list":[${comic("first")}],"total":31,"offset":0,"limit":30}}"""))
+            web.enqueue(response("""{"code":200,"results":{"list":[${comic("second")}],"total":31,"offset":30,"limit":30}}"""))
+            val source = SourceConfig("copy-fixture", "Fixture", CopySource.TYPE, web.url("/").toString())
+            val client = CopySourceClient(source, http, web.url("/").toString(), contentAddress = web.url("/").toString(),
+                searchAddresses = listOf(web.url("/").toString()), searchApiAddress = api.url("/").toString())
+            val query = CopyQuery(kind = "search", keyword = "金牌得主")
+            assertEquals("first", client.catalog(query).entries.single().key)
+            val second = client.catalog(query, 2)
+            assertEquals("second", second.entries.single().key)
+            assertFalse(second.more)
+            assertEquals(2, attempts.get())
+            web.takeRequest()
+            val request = web.takeRequest().requestUrl!!
+            assertEquals("/api/kb/web/searchcl/comics", request.encodedPath)
+            assertEquals("30", request.queryParameter("offset"))
+        } }
+    }
+
     @Test fun readingConnectionFailureUsesVerifiedContentServiceAndKeepsTheHealthyRoute() {
         MockWebServer().use { primary -> MockWebServer().use { backup ->
             val attempts = AtomicInteger()

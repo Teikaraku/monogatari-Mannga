@@ -56,6 +56,7 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
     private val contentVersion: String = JSONObject(source.configuration).optString("contentApiVersion", CopySource.CONTENT_API_VERSION),
     searchAddresses: List<String>? = null,
     contentAlternates: List<String>? = null,
+    searchApiAddress: String? = null,
     private val now: () -> Long = System::currentTimeMillis,
     private val pause: (Long) -> Unit = Thread::sleep) {
     private val api = checkedAddress(apiAddress)
@@ -69,6 +70,11 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
     private val website = checkedAddress(source.baseUrl.ifBlank { CopySource.WEBSITE })
     private val searchBases = (searchAddresses ?: if (website.host in setOf("www.2026copy.com", "www.copy4000.com"))
         listOf(CopySource.MAINLAND_WEBSITE, CopySource.WEBSITE) else listOf(website.toString())).map(::checkedAddress).distinct()
+    private data class SearchEndpoint(val base: HttpUrl, val api: Boolean)
+    private class SearchState(var endpoint: SearchEndpoint? = null)
+    private val searches = LinkedHashMap<String, SearchState>(16, .75f, true)
+    private val searchApi = (searchApiAddress ?: if (searchAddresses == null && website.host in setOf("www.2026copy.com", "www.copy4000.com"))
+        CopySource.CONTENT_BACKUP else null)?.let(::checkedAddress)
     private val policy = CopyRequestPolicy(now, pause)
     private data class CachedPages(val until: Long, val pages: List<String>)
     private val pageCache = LinkedHashMap<String, CachedPages>(32, .75f, true)
@@ -305,17 +311,29 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
     }
 
     private fun search(keyword: String, page: Int, limit: Int): JSONObject {
+        val state = synchronized(searches) {
+            if (page == 1) SearchState().also { searches[keyword] = it; while (searches.size > 16) searches.remove(searches.keys.first()) }
+            else searches[keyword] ?: SearchState()
+        }
+        val selected = synchronized(searches) { state.endpoint }
+        if (page > 1 && searchApi != null && selected == null) error("搜索状态已失效，请重新搜索。")
+        val defaults = listOfNotNull(searchApi?.let { SearchEndpoint(it, true) }) + searchBases.map { SearchEndpoint(it, false) }
+        val choices = if (page > 1 && selected != null) listOf(selected) + defaults.filter { it != selected && it.api == selected.api } else defaults
         val failures = mutableListOf<String>()
-        for ((index, base) in searchBases.withIndex()) {
-            val url = base.newBuilder().addPathSegments("api/kb/web/searchcl/comics")
-                .addQueryParameter("q", keyword).addQueryParameter("q_type", "").addQueryParameter("platform", "2")
+        for ((index, endpoint) in choices.withIndex()) {
+            val url = endpoint.base.newBuilder().addPathSegments(if (endpoint.api) "api/v3/search/comic" else "api/kb/web/searchcl/comics")
+                .addQueryParameter("q", keyword).addQueryParameter("q_type", "").addQueryParameter("platform", if (endpoint.api) "3" else "2")
                 .addQueryParameter("limit", "$limit").addQueryParameter("offset", "${(page - 1) * limit}").build()
-            try { return requestWithRetry(url, "搜索", false) }
+            try {
+                val data = requestWithRetry(url, "搜索", endpoint.api)
+                synchronized(searches) { if (searches[keyword] === state) state.endpoint = endpoint }
+                return data
+            }
             catch (error: IOException) {
                 if (error is CopyRateLimitFailure || Thread.currentThread().isInterrupted ||
                     error is HttpFailure && error.status !in setOf(404, 408) && error.status < 500) throw error
                 failures += connectionFailure(url, "搜索", error)
-                if (index == searchBases.lastIndex) throw IOException(failures.joinToString("\n"), error)
+                if (index == choices.lastIndex) throw IOException(failures.joinToString("\n"), error)
             }
         }
         error("没有可用的搜索地址")
