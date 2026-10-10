@@ -1,0 +1,55 @@
+name: 构建 iPhone 安装包
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'Monogatari/**'
+      - 'MonogatariTests/**'
+      - 'Monogatari.xcodeproj/**'
+      - '.github/workflows/ios.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: 准备 iOS 平台
+        run: |
+          xcrun simctl list > /dev/null # fixes next command sometimes failing
+          xcodebuild -downloadPlatform iOS
+      - name: 编译（未签名）
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild -project Monogatari.xcodeproj -scheme Monogatari -configuration Release \
+            -destination 'generic/platform=iOS' archive -archivePath build/Monogatari.xcarchive \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGN_IDENTITY= CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee build/xcodebuild.log | if command -v xcbeautify > /dev/null; then xcbeautify --renderer github-actions; else cat; fi
+      - name: 打包 IPA
+        run: |
+          APP=build/Monogatari.xcarchive/Products/Applications/Monogatari.app
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
+          mkdir Payload
+          cp -R "$APP" Payload/
+          IPA="monogatari-ios-${VERSION}-unsigned.ipa"
+          zip -qry "$IPA" Payload
+          echo "IPA=$IPA" >> "$GITHUB_ENV"
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: monogatari-ios
+          path: ${{ env.IPA }}
+          if-no-files-found: error
+      - name: 上传编译日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: build/xcodebuild.log
+          if-no-files-found: ignore

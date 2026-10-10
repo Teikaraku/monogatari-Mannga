@@ -1,0 +1,81 @@
+{
+  "version": "0.9",
+  "archive": {
+    "name": "monogatari-build-assets-0.9.zip",
+    "url": "https://github.com/Teikaraku/monogatari-reader/releases/download/v0.9/monogatari-build-assets-0.9.zip",
+    "bytes": 71791857,
+    "sha256": "59032fd7bc8e7f23785eeb1624a764fa4270e4d8b8e1ce0e0f5cfc0b9b56e3bc"
+  },
+  "files": [
+    {
+      "path": "dictionary/tessdata/Arabic.traineddata",
+      "bytes": 9311038,
+      "sha256": "47c262ac4e843c024df87ffa1363b77a821a843c069c71ef7650f4d2ecfea1e8"
+    },
+    {
+      "path": "dictionary/tessdata/Cyrillic.traineddata",
+      "bytes": 29252466,
+      "sha256": "a80325ebb1c7aa2dca5002ec05b15052a51dcb2e9e65373c264a3df7ac284358"
+    },
+    {
+      "path": "dictionary/tessdata/Devanagari.traineddata",
+      "bytes": 17943870,
+      "sha256": "3bbb87c1de2a6a2ef0a97dc041e6eea2723a1c22d638f5e38157a5cd441c12b7"
+    },
+    {
+      "path": "dictionary/tessdata/Greek.traineddata",
+      "bytes": 3041556,
+      "sha256": "52e201e4a22336d89ee202b579aca04f15ffd6e5e6af1fe164498f2c7de898e6"
+    },
+    {
+      "path": "dictionary/tessdata/Hebrew.traineddata",
+      "bytes": 4866337,
+      "sha256": "4f4f3405404a61e21e5c16316ed5c3052ddb3572a75e0b3dc3fe118b12dea76e"
+    },
+    {
+      "path": "dictionary/tessdata/Thai.traineddata",
+      "bytes": 4249016,
+      "sha256": "d9e34be94556ddb65fd7e04892ff606e1a5b696d0eb422b5a7efc6859943702d"
+    },
+    {
+      "path": "upscale/RealESRGAN_x2plus.onnx",
+      "bytes": 66999117,
+      "sha256": "98f4e7531f5fd0552ee98c1fd618985741225a04ca8ecc532610785dafbeb34c"
+    },
+    {
+      "path": "upscale/waifu2x_photo_noise0_scale2x.onnx",
+      "bytes": 2212172,
+      "sha256": "c283e1130e54e7220d7b0fe1a800a0155623a9dbf9d335be3f3b6dc831f44358"
+    }
+  ],
+  "originalModels": {
+    "archive": {
+      "name": "monogatari-model-sources-0.9.zip",
+      "url": "https://github.com/Teikaraku/monogatari-reader/releases/download/v0.9/monogatari-model-sources-0.9.zip",
+      "bytes": 32101808,
+      "sha256": "f621071b6b888f16540c289ca74afa422a84078e98724e7231bb6f30662cbc28"
+    },
+    "files": [
+      {
+        "path": "RealESRGAN_x2plus.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+        "bytes": 663262,
+        "sha256": "38494c9e2027e2dd75f3802c63ceb08d444c7098fabdab3355c121abcbb7abbd"
+      },
+      {
+        "path": "RealESRGAN_x2plus.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+        "bytes": 33451264,
+        "sha256": "a8904f0bb627d5dbce2468a96c648764a63ece561cfcf118da6321831bb3a926"
+      },
+      {
+        "path": "RealESRGAN_x2plus.mlpackage/Manifest.json",
+        "bytes": 617,
+        "sha256": "bce12840f37ec4e0d49a5926955dd18a35efe76d564d908ff2c03a6a00173a3d"
+      },
+      {
+        "path": "waifu2x_photo_noise0_scale2x.mlmodel",
+        "bytes": 1106111,
+        "sha256": "9de0ffbe522c747f6230152112005aa079726e994f30b67da85d7592e656234a"
+      }
+    ]
+  }
+}

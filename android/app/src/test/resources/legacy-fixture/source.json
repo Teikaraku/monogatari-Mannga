@@ -1,0 +1,1 @@
+{"info": {"id": "legacy.integration", "name": "Legacy integration fixture", "version": 1, "lang": "en", "url": "https://example.test"}, "filters": [{"name": "Title", "type": "text", "default": ""}]}

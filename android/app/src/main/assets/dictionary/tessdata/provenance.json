@@ -1,0 +1,43 @@
+{
+  "license": "Apache-2.0",
+  "models": [
+    {
+      "bytes": 9311038,
+      "sha256": "47c262ac4e843c024df87ffa1363b77a821a843c069c71ef7650f4d2ecfea1e8",
+      "source": "https://github.com/tesseract-ocr/tessdata_fast/blob/87416418657359cb625c412a48b6e1d6d41c29bd/script/Arabic.traineddata",
+      "file": "Arabic.traineddata"
+    },
+    {
+      "bytes": 29252466,
+      "sha256": "a80325ebb1c7aa2dca5002ec05b15052a51dcb2e9e65373c264a3df7ac284358",
+      "source": "https://github.com/tesseract-ocr/tessdata_fast/blob/87416418657359cb625c412a48b6e1d6d41c29bd/script/Cyrillic.traineddata",
+      "file": "Cyrillic.traineddata"
+    },
+    {
+      "bytes": 3041556,
+      "sha256": "52e201e4a22336d89ee202b579aca04f15ffd6e5e6af1fe164498f2c7de898e6",
+      "source": "https://github.com/tesseract-ocr/tessdata_fast/blob/87416418657359cb625c412a48b6e1d6d41c29bd/script/Greek.traineddata",
+      "file": "Greek.traineddata"
+    },
+    {
+      "bytes": 4866337,
+      "sha256": "4f4f3405404a61e21e5c16316ed5c3052ddb3572a75e0b3dc3fe118b12dea76e",
+      "source": "https://github.com/tesseract-ocr/tessdata_fast/blob/87416418657359cb625c412a48b6e1d6d41c29bd/script/Hebrew.traineddata",
+      "file": "Hebrew.traineddata"
+    },
+    {
+      "bytes": 4249016,
+      "sha256": "d9e34be94556ddb65fd7e04892ff606e1a5b696d0eb422b5a7efc6859943702d",
+      "source": "https://github.com/tesseract-ocr/tessdata_fast/blob/87416418657359cb625c412a48b6e1d6d41c29bd/script/Thai.traineddata",
+      "file": "Thai.traineddata"
+    },
+    {
+      "source": "https://github.com/tesseract-ocr/tessdata_fast/blob/87416418657359cb625c412a48b6e1d6d41c29bd/script/Devanagari.traineddata",
+      "bytes": 17943870,
+      "file": "Devanagari.traineddata",
+      "sha256": "3bbb87c1de2a6a2ef0a97dc041e6eea2723a1c22d638f5e38157a5cd441c12b7"
+    }
+  ],
+  "commit": "87416418657359cb625c412a48b6e1d6d41c29bd",
+  "repository": "https://github.com/tesseract-ocr/tessdata_fast"
+}

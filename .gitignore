@@ -1,0 +1,45 @@
+# Xcode
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+!*.xcodeproj/xcshareddata/
+!*.xcodeproj/*.xcworkspace/
+
+*.xcodeproj/*.xcworkspace/*
+!*.xcodeproj/*.xcworkspace/contents.xcworkspacedata
+!*.xcodeproj/*.xcworkspace/xcshareddata/
+
+*.xcodeproj/*.xcworkspace/xcshareddata/*
+!*.xcodeproj/*.xcworkspace/xcshareddata/swiftpm/
+
+# Other
+.DS_Store
+build/
+
+# Zed
+.zed
+
+# Xcode-Build-Server
+buildServer.json
+
+# Local development tools and generated reports
+.publish/
+**/__pycache__/
+*.pyc
+*.log
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+*.p12
+!android/app/src/androidTest/assets/browser-test.p12
+
+# Android model data is distributed with releases, not mixed into source history.
+android/app/src/main/assets/upscale/*.onnx
+android/app/src/main/assets/dictionary/tessdata/*.traineddata
+android/model-conversion/*.mlmodel
+android/model-conversion/*.mlpackage/
+android/model-conversion/*.mlpackage.zip
+
+# Local release signing
+android/keystore.properties

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <service android:name=".sources.ProfileRecoveryFixtureService" android:exported="false" android:process=":sourceProfileRecovery" />
+        <receiver android:name=".debug.PreviewInputReceiver" android:exported="true">
+            <intent-filter><action android:name="app.monogatari.android.PREVIEW_PASTE" /></intent-filter>
+        </receiver>
+    </application>
+</manifest>

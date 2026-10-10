@@ -1,0 +1,35 @@
+{
+  "name": "waifu2x (photo, 2x, noise0)",
+  "blockSize": 156,
+  "shrinkSize": 7,
+  "tileOverlap": 0,
+  "file": "waifu2x_photo_noise0_scale2x.onnx",
+  "inputShape": [
+    1,
+    3,
+    156,
+    156
+  ],
+  "outputShape": [
+    1,
+    3,
+    284,
+    284
+  ],
+  "scale": 2,
+  "sourceSha256": "9de0ffbe522c747f6230152112005aa079726e994f30b67da85d7592e656234a",
+  "sha256": "c283e1130e54e7220d7b0fe1a800a0155623a9dbf9d335be3f3b6dc831f44358",
+  "originalSource": "https://upscale.aidoku.app/models.json",
+  "intermediatePrecision": "FP32 (original FP16 weights)",
+  "validation": {
+    "shape": [
+      1,
+      3,
+      284,
+      284
+    ],
+    "min": 0.0,
+    "max": 1.0,
+    "finite": true
+  }
+}

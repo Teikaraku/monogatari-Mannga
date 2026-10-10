@@ -1,0 +1,13 @@
+.gradle/
+.kotlin/
+local.properties
+**/build/
+*.iml
+.idea/
+.reference/
+.tools/
+.asset-cache/
+verification/
+deliverables/
+/android/
+PORTING_STATUS.json
