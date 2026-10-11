@@ -852,6 +852,8 @@ struct CopyClient: Sendable {
         var request = original
         guard let address = request.url else { throw CopyError.message("无效漫画图片地址") }
         request.url = Self.imageUrl(address)
+        // A stalled CDN connection gives up after 15 seconds of silence and is retried on a fresh one.
+        request.timeoutInterval = min(request.timeoutInterval, 15)
         let url = request.url!
         var attempt = 0
         while true {

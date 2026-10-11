@@ -494,29 +494,9 @@ extension AppDelegate {
 
     func handleUrl(url: URL) {
         if url.scheme == "aidoku" || url.scheme == "monogatari" { // aidoku:// or monogatari://
-            if url.host == "addSourceList" { // addSourceList?url=
-                let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-                if
-                    let listUrlString = components?.queryItems?.first(where: { $0.name == "url" })?.value,
-                    let listUrl = URL(string: listUrlString)
-                {
-                    Task {
-                        let sourceListURLs = await SourceManager.shared.getSourceListURLs()
-                        guard !sourceListURLs.contains(listUrl) else { return }
-                        let success = await SourceManager.shared.addSourceList(url: listUrl)
-                        if success {
-                            presentAlert(
-                                title: NSLocalizedString("SOURCE_LIST_ADDED"),
-                                message: NSLocalizedString("SOURCE_LIST_ADDED_TEXT")
-                            )
-                        } else {
-                            presentAlert(
-                                title: NSLocalizedString("SOURCE_LIST_ADD_FAIL"),
-                                message: NSLocalizedString("SOURCE_LIST_ADD_FAIL_TEXT")
-                            )
-                        }
-                    }
-                }
+            // Sources come with the app; links that add source lists are ignored.
+            if url.host == "addSourceList" {
+                return
             } else if let host = url.host, let source = SourceManager.shared.store.source(for: host) {
                 // todo: we should support opening items in library even if the source isn't installed
                 Task { @MainActor in
@@ -576,15 +556,8 @@ extension AppDelegate {
                 }
             }
         } else if url.pathExtension == "aix" {
-            Task {
-                let result = await SourceManager.shared.importSource(from: url)
-                if result == nil {
-                    presentAlert(
-                        title: NSLocalizedString("IMPORT_FAIL"),
-                        message: NSLocalizedString("SOURCE_IMPORT_FAIL_TEXT")
-                    )
-                }
-            }
+            // Source packages are not installed from files.
+            return
         } else if url.pathExtension == "json" || url.pathExtension == "aib" {
             Task {
                 if await BackupManager.shared.importBackup(from: url) {

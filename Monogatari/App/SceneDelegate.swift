@@ -67,6 +67,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func sceneDidBecomeActive(_ scene: UIScene) {
         contentHideView.removeFromSuperview()
+        Task { @MainActor in
+            AppUpdatePresenter.start()
+            AppUpdatePresenter.present()
+            await AppUpdateManager.shared.check()
+        }
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {

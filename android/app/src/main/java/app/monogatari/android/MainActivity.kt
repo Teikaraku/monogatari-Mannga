@@ -89,7 +89,7 @@ class MainActivity : FragmentActivity() {
                 }
             } else model.run {
                 when (withContext(Dispatchers.IO) { app.monogatari.android.library.IncomingLinks.fileKind(model.repo, uri) }) {
-                    "source" -> { val source = withContext(Dispatchers.IO) { model.repo.client.runtimes.install(uri, retainPrevious = true) }; app.monogatari.android.ui.saveInstalled(model, source); model.navigate("source", source.id) }
+                    "source" -> error(app.monogatari.android.ui.Localization.string(model.repo.context, "UNAVAILABLE"))
                     "backup" -> { val summary = app.monogatari.android.backup.CompleteBackupManager(model.repo).import(uri); model.navigate("backups", summary.file.absolutePath) }
                     else -> { model.repo.import(uri); model.showTabRoot(0) }
                 }

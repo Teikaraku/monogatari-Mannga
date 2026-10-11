@@ -102,7 +102,6 @@ private val rankPeriods = setOf("day", "week", "month", "total")
             Text(source.name, Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.Medium)
             IconButton({ openCopy(vm, "search") }) { Icon(Icons.Outlined.Search, tr("SEARCH"), tint = Pink) }
             IconButton(::refresh, enabled = !disabled && !memory.busy) { Icon(Icons.Outlined.Refresh, tr("UPDATES"), tint = Pink) }
-            IconButton({ vm.navigate("sourceManager") }) { Icon(Icons.Outlined.Tune, pt("Manage sources", "图源管理"), tint = Pink) }
         }
         if (disabled) { DisabledCopySource(vm, source); return@Column }
         val home = memory.home
@@ -111,21 +110,24 @@ private val rankPeriods = setOf("day", "week", "month", "total")
                 // The placeholder occupies the banner slot from the first frame, so the list stays anchored at the top when data arrives.
                 if (home?.features?.isNotEmpty() == true) item(key = "features") { CopyFeaturePager(home.features, vm::open) }
                 else if (home == null && memory.error == null) item(key = "features") { CopyFeaturePlaceholder() }
-                // Five shortcuts spread over a tablet's width would drift apart; they keep a phone-sized row.
-                item(key = "shortcuts") { Row(Modifier.fillMaxWidth().wrapContentWidth(Alignment.Start).widthIn(max = 600.dp).padding(horizontal = 12.dp, vertical = 14.dp)) {
-                    CopyShortcut(pt("Discover", "发现"), Icons.Outlined.Explore) { openCopy(vm, "discover") }
-                    CopyShortcut(pt("Categories", "分类"), Icons.Outlined.Widgets) { openCopy(vm, "categories") }
-                    CopyShortcut(pt("Rankings", "排行"), Icons.Outlined.BarChart) { openCopy(vm, "ranking") }
-                    CopyShortcut(pt("Completed", "完结"), Icons.Outlined.TaskAlt) { openCopy(vm, "finished") }
-                    CopyShortcut(pt("Topics", "专题"), Icons.Outlined.CollectionsBookmark) { openCopy(vm, "topics") }
-                } }
-                memory.error?.let { error -> item(key = "error") { CopyError(error, ::refresh) } }
+                item(key = "shortcuts") {
+                    val wide = wideShelves()
+                    Row(Modifier.fillMaxWidth().padding(horizontal = if (wide) shelfInset() else 12.dp, vertical = 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(if (wide) 12.dp else 0.dp)) {
+                        listOf(Triple(pt("Discover", "发现"), Icons.Outlined.Explore, "discover"), Triple(pt("Categories", "分类"), Icons.Outlined.Widgets, "categories"),
+                            Triple(pt("Rankings", "排行"), Icons.Outlined.BarChart, "ranking"), Triple(pt("Completed", "完结"), Icons.Outlined.TaskAlt, "finished"),
+                            Triple(pt("Topics", "专题"), Icons.Outlined.CollectionsBookmark, "topics")).forEach { (title, icon, mode) ->
+                            if (wide) CopyShortcutTile(title, icon) { openCopy(vm, mode) } else CopyShortcut(title, icon) { openCopy(vm, mode) }
+                        }
+                    }
+                }
+                memory.error?.let { error -> item(key = "error") { Box(Modifier.padding(horizontal = shelfInset() - 16.dp)) { CopyError(error, ::refresh) } } }
                 if (home == null) {
                     if (memory.error == null) item(key = "shelves-placeholder") { CopyShelfPlaceholder() }
                     return@LazyColumn
                 }
                 home.notice?.let { notice -> item(key = "home-notice") {
-                    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = shelfInset(), vertical = 8.dp)) {
                         Text(notice, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         home.diagnostics?.let { details ->
                             TextButton({ vm.message = details }) { Text(pt("Loading details", "查看加载详情")) }
@@ -151,7 +153,7 @@ private fun LazyListScope.copyHomeShelves(home: CopyHome, vm: MonogatariViewMode
         item(key = "title:$id") { CopyShelfHeader(section.title, more?.let { target -> { openCopy(vm, target) } }) }
         item(key = "books:$id") { body(section) }
     }
-    shelf("recComics", null) { CopyBookGrid(it.entries.take(6), vm) }
+    shelf("recComics", null) { if (wideShelves()) CopyPickRow(it.entries.take(3), vm) else CopyBookGrid(it.entries.take(6), vm) }
     if (home.rankings.isNotEmpty()) {
         placed += "rankDayComics"
         item(key = "rankings") { CopyRankingShelf(home.rankings, vm) }
@@ -163,14 +165,17 @@ private fun LazyListScope.copyHomeShelves(home: CopyHome, vm: MonogatariViewMode
     home.sections.filter { it.id !in placed }.forEach { section -> shelf(section.id, null) { CopyBookRow(it.entries, vm) } }
     if (home.topics.isNotEmpty()) {
         item(key = "title:topics") { CopyShelfHeader(pt("Special collections", "精选专题")) { openCopy(vm, "topics") } }
-        item(key = "topics") { LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(home.topics, key = { it.key }) { topic -> CopyTopicBanner(topic, Modifier.width(264.dp)) { openCopy(vm, "topic:${topic.key}") } }
-        } }
+        item(key = "topics") {
+            val width = if (wideShelves()) shelfSpan(3) else 264.dp
+            LazyRow(contentPadding = PaddingValues(horizontal = shelfInset()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(home.topics, key = { it.key }) { topic -> CopyTopicBanner(topic, Modifier.width(width)) { openCopy(vm, "topic:${topic.key}") } }
+            }
+        }
     }
 }
 
 @Composable private fun CopyShelfHeader(title: String, onMore: (() -> Unit)? = null) {
-    Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 18.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(start = shelfInset(), end = shelfInset() - 12.dp, top = 18.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.width(4.dp).height(19.dp).clip(RoundedCornerShape(2.dp)).background(Pink))
         Text(title, Modifier.weight(1f).padding(start = 10.dp), fontSize = 20.sp, fontWeight = FontWeight.Bold)
         if (onMore != null) TextButton(onMore, contentPadding = PaddingValues(start = 12.dp, end = 4.dp)) {
@@ -186,10 +191,28 @@ private fun LazyListScope.copyHomeShelves(home: CopyHome, vm: MonogatariViewMode
         Text(title, Modifier.padding(top = 7.dp), fontSize = 12.sp)
     }
 }
-/** Phones show one banner at the phone height; wider windows keep that shape and show several banners side by side. */
+@Composable private fun RowScope.CopyShortcutTile(title: String, icon: ImageVector, onOpen: () -> Unit) {
+    Row(Modifier.weight(1f).height(56.dp).clip(RoundedCornerShape(14.dp)).background(Pink.copy(alpha = .06f)).clickable(onClick = onOpen).padding(horizontal = 12.dp),
+        horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, Modifier.size(22.dp), tint = Pink)
+        Text(title, Modifier.padding(start = 8.dp), fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/**
+ * Phones keep their layout. On tablets every shelf shares one centred content column, capped so covers keep a sensible
+ * size, and one six-column grid, so all shelves line up on both edges and no row is left half empty.
+ */
+@Composable private fun wideShelves() = windowWidth() >= 600.dp
+@Composable private fun shelfContent(): Dp = (windowWidth() - 40.dp).let { if (wideShelves()) it.coerceAtMost(1120.dp) else it.coerceAtLeast(0.dp) }
+@Composable private fun shelfInset(): Dp = ((windowWidth() - shelfContent()) / 2).coerceAtLeast(20.dp)
+@Composable private fun shelfColumns() = if (wideShelves()) 6 else 3
+@Composable private fun shelfSpan(count: Int, gap: Dp = 12.dp): Dp = (shelfContent() - gap * (count - 1)) / count
+/** Banners and chart columns shown whole on one tablet screen. */
+@Composable private fun perScreen() = if (windowWidth() >= 1000.dp) 3 else 2
 private val bannerMaxWidth = 520.dp
-@Composable private fun bannerWidth(): Dp = (windowWidth() - 40.dp).coerceIn(0.dp, bannerMaxWidth)
-@Composable private fun bannerHeight(): Dp = (bannerWidth() / 1.95f).coerceAtLeast(190.dp)
+@Composable private fun bannerWidth(): Dp = if (wideShelves()) shelfSpan(perScreen()) else (windowWidth() - 40.dp).coerceIn(0.dp, bannerMaxWidth)
+@Composable private fun bannerHeight(): Dp = if (wideShelves()) bannerWidth() / 1.95f else (bannerWidth() / 1.95f).coerceAtLeast(190.dp)
 @Composable private fun CopyFeaturePager(features: List<CopyFeature>, onOpen: (Manga) -> Unit) {
     val pager = rememberPagerState { features.size }
     val pageWidth = bannerWidth(); val pageHeight = bannerHeight()
@@ -200,7 +223,7 @@ private val bannerMaxWidth = 520.dp
         if (!pager.isScrollInProgress) pager.animateScrollToPage((pager.settledPage + 1) % features.size)
     }
     Column {
-        HorizontalPager(pager, contentPadding = PaddingValues(horizontal = 20.dp), pageSize = PageSize.Fixed(pageWidth), pageSpacing = 12.dp) { index ->
+        HorizontalPager(pager, contentPadding = PaddingValues(horizontal = shelfInset()), pageSize = PageSize.Fixed(pageWidth), pageSpacing = 12.dp) { index ->
             val feature = features[index]
             Box(Modifier.fillMaxWidth().height(pageHeight).clip(RoundedCornerShape(18.dp)).clickable { onOpen(feature.manga) }) {
                 AsyncImage(feature.image, feature.manga.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -235,23 +258,50 @@ private fun Manga.latestChapter(): String = copyMeta().let { it.optString("copyL
         if (manga.author.isNotBlank()) Text(manga.author, fontSize = 11.sp, lineHeight = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
-/** Three columns on phones; six on tablets and in landscape, so the six-item shelves fill one row at a familiar cover size. */
-@Composable private fun CopyBookGrid(entries: List<Manga>, vm: MonogatariViewModel) {
-    val columns = if (windowWidth() >= 600.dp) 6 else 3
-    Column(Modifier.padding(horizontal = 20.dp).widthIn(max = 960.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+/** Three columns on phones; six across the content column on tablets, so the six-item shelves fill one row. */
+@Composable private fun CopyBookGrid(entries: List<Manga>, vm: MonogatariViewModel, titleLines: Int = 2, showLatest: Boolean = false) {
+    val columns = shelfColumns()
+    Column(Modifier.padding(horizontal = shelfInset()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         entries.chunked(columns).forEach { row -> Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            row.forEach { CopyBookCard(it, vm, Modifier.weight(1f)) }
+            row.forEach { CopyBookCard(it, vm, Modifier.weight(1f), titleLines, showLatest) }
             repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
         } }
     }
 }
+/** Tablets give the three picks one row of wide cards instead of half a row of covers. */
+@Composable private fun CopyPickRow(entries: List<Manga>, vm: MonogatariViewModel) {
+    val card = shelfSpan(3)
+    val cover = minOf(shelfSpan(6), card * .4f)
+    Row(Modifier.padding(horizontal = shelfInset()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        entries.forEach { manga ->
+            val popular = remember(manga.metadata) { manga.copyMeta().optLong("popular", 0L) }
+            Row(Modifier.width(card).clip(RoundedCornerShape(14.dp)).background(sheetGroupColor()).clickable { vm.open(manga) }.padding(10.dp)) {
+                Cover(manga, vm.repo, Modifier.width(cover).aspectRatio(.72f))
+                Column(Modifier.weight(1f).padding(start = 12.dp, top = 2.dp)) {
+                    Text(manga.title, fontSize = 16.sp, lineHeight = 21.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    if (manga.author.isNotBlank()) Text(manga.author, Modifier.padding(top = 4.dp), fontSize = 12.sp, lineHeight = 16.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (manga.tags.isNotEmpty()) Text(manga.tags.take(3).joinToString(" · "), Modifier.padding(top = 8.dp), fontSize = 12.sp, lineHeight = 16.sp,
+                        color = Pink, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    if (popular > 0) Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.LocalFireDepartment, null, Modifier.size(13.dp), tint = Pink.copy(alpha = .8f))
+                        Text(heat(popular), Modifier.padding(start = 2.dp), fontSize = 11.sp, lineHeight = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+    }
+}
+/** Tablets show the feed as two full rows of the grid; phones scroll it. */
 @Composable private fun CopyBookRow(entries: List<Manga>, vm: MonogatariViewModel) {
+    if (wideShelves()) { CopyBookGrid(entries.take(12), vm, showLatest = true); return }
     LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         items(entries, key = { it.id }) { manga -> CopyBookCard(manga, vm, Modifier.width(108.dp), showLatest = true) }
     }
 }
 /** A horizontal grid needs a fixed height; derive it from the card's cover ratio and the scaled text line heights. */
 @Composable private fun CopyTwoRowShelf(entries: List<Manga>, vm: MonogatariViewModel) {
+    if (wideShelves()) { CopyBookGrid(entries.take(12), vm, titleLines = 1, showLatest = true); return }
     val width = 104.dp
     val text = with(LocalDensity.current) { 19.sp.toDp() + 15.sp.toDp() }
     val card = width / .72f + 7.dp + text + 2.dp
@@ -266,15 +316,16 @@ private val rankRowHeight = 78.dp
 @Composable private fun CopyRankingShelf(rankings: List<CopyRanking>, vm: MonogatariViewModel) {
     var period by rememberSaveable { mutableStateOf(rankings.first().period) }
     val current = rankings.firstOrNull { it.period == period } ?: rankings.first()
-    val rows = current.entries.size.coerceIn(1, 3)
+    // Tablets fit the chart into whole columns on one screen; phones scroll three-row columns.
+    val wide = wideShelves(); val columns = perScreen()
+    val rows = (if (wide) (current.entries.size + columns - 1) / columns else current.entries.size).coerceIn(1, 3)
     Column {
         CopyShelfHeader(pt("Rankings", "排行榜")) { openCopy(vm, "ranking:${current.period}") }
-        Row(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.padding(start = shelfInset(), end = shelfInset(), bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             rankings.forEach { ranking -> SheetChip(ranking.title, ranking.period == current.period, { period = ranking.period }, checkmark = false) }
         }
-        // Each chart column stays phone-sized, so tablets show the next columns instead of one stretched list.
-        val width = (windowWidth() * .8f).coerceAtMost(380.dp)
-        LazyHorizontalGrid(GridCells.Fixed(rows), Modifier.fillMaxWidth().height(rankRowHeight * rows + 8.dp * (rows - 1)), contentPadding = PaddingValues(horizontal = 20.dp),
+        val width = if (wide) shelfSpan(columns, 16.dp) else (windowWidth() * .8f).coerceAtMost(380.dp)
+        LazyHorizontalGrid(GridCells.Fixed(rows), Modifier.fillMaxWidth().height(rankRowHeight * rows + 8.dp * (rows - 1)), contentPadding = PaddingValues(horizontal = shelfInset()),
             horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             itemsIndexed(current.entries, key = { _, manga -> "${current.period}:${manga.id}" }) { index, manga -> CopyRankRow(manga, index + 1, vm, Modifier.width(width)) }
         }
@@ -334,13 +385,14 @@ private fun fullSizeImage(url: String): String = url.replace(Regex("""(\.(?:jpe?
 }
 
 @Composable private fun CopyFeaturePlaceholder() {
-    Box(Modifier.padding(horizontal = 20.dp).width(bannerWidth()).height(bannerHeight()).clip(RoundedCornerShape(18.dp)).background(sheetGroupColor()))
+    Box(Modifier.padding(horizontal = shelfInset()).width(bannerWidth()).height(bannerHeight()).clip(RoundedCornerShape(18.dp)).background(sheetGroupColor()))
 }
 @Composable private fun CopyShelfPlaceholder() {
     val tone = sheetGroupColor()
-    Column(Modifier.padding(horizontal = 20.dp)) { repeat(2) {
+    val columns = shelfColumns()
+    Column(Modifier.padding(horizontal = shelfInset())) { repeat(2) {
         Box(Modifier.padding(top = 18.dp, bottom = 14.dp).size(width = 96.dp, height = 20.dp).clip(RoundedCornerShape(6.dp)).background(tone))
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { repeat(3) { Column(Modifier.weight(1f)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) { repeat(columns) { Column(Modifier.weight(1f)) {
             Box(Modifier.fillMaxWidth().aspectRatio(.72f).clip(RoundedCornerShape(8.dp)).background(tone))
             Box(Modifier.padding(top = 8.dp).fillMaxWidth(.85f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(tone))
             Box(Modifier.padding(top = 6.dp).fillMaxWidth(.5f).height(10.dp).clip(RoundedCornerShape(4.dp)).background(tone))
@@ -532,7 +584,6 @@ private fun fullSizeImage(url: String): String = url.replace(Regex("""(\.(?:jpe?
     Column {
         Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             Spacer(Modifier.weight(1f))
-            IconButton({ vm.navigate("sourceManager") }) { Icon(Icons.Outlined.Tune, pt("Manage sources", "图源管理"), tint = Pink) }
         }
         EmptyPage(Icons.Outlined.MenuBook, "拷贝漫画", pt("Add the source to load comics.", "添加拷贝漫画图源后即可浏览漫画"), pt("Add source", "添加图源")) {
             vm.run { vm.repo.change { state -> state.copy(sources = (state.sources + CopySource.configuration).distinctBy { it.id }) } }

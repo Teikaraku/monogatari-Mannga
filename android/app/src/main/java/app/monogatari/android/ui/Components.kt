@@ -41,6 +41,8 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 val Pink = Color(0xFFFF2D55)
 val GroupGray = Color(0xFFF2F2F7)
@@ -89,17 +91,27 @@ fun Modifier.readableWidth(max: Dp = ReadableWidth): Modifier = fillMaxWidth().w
     }
 }
 @Composable fun Cover(manga: Manga, repo: AppRepository, modifier: Modifier = Modifier) {
-    val state by repo.state.collectAsState()
-    val source = state.sources.firstOrNull { it.id == manga.sourceId }
-    val processed by produceState<ByteArray?>(null, source?.id, source?.configuration, manga.cover) {
-        value = if (source != null && source.type in setOf("wasm", app.monogatari.android.sources.CopySource.TYPE) && manga.cover.isNotBlank()) withContext(Dispatchers.IO) {
-            runCatching { repo.client.coverBytes(source, manga.cover) }.getOrNull()
-        } else null
+    // Only this cover's source matters; following the whole app state would redraw every cover on each change.
+    val sources = remember(repo, manga.sourceId) {
+        val pick = { state: AppState -> state.sources.firstOrNull { it.id == manga.sourceId } }
+        pick(repo.state.value) to repo.state.map(pick).distinctUntilChanged()
     }
-    val request = ImageRequest.Builder(LocalContext.current).data(processed ?: manga.cover.ifBlank { R.drawable.manga_placeholder })
-        .crossfade(true).apply { if (source != null && source.baseUrl.isNotBlank() && manga.cover.startsWith(source.baseUrl.trimEnd('/') + "/")) {
-            repo.client.headers(source).forEach { (k, v) -> addHeader(k, v) }
-        }}.build()
+    val source by sources.second.collectAsState(sources.first)
+    val context = LocalContext.current
+    val request = remember(context, source, manga.cover) {
+        val current = source
+        val data: Any = when {
+            manga.cover.isBlank() -> R.drawable.manga_placeholder
+            current != null && current.type in setOf("wasm", app.monogatari.android.sources.CopySource.TYPE) ->
+                app.monogatari.android.data.SourceCover(current.id, manga.cover)
+            else -> manga.cover
+        }
+        ImageRequest.Builder(context).data(data).crossfade(true).apply {
+            if (data is String && current != null && current.baseUrl.isNotBlank() && manga.cover.startsWith(current.baseUrl.trimEnd('/') + "/")) {
+                repo.client.headers(current).forEach { (k, v) -> addHeader(k, v) }
+            }
+        }.build()
+    }
     AsyncImage(request, manga.title, modifier.clip(RoundedCornerShape(8.dp)), placeholder = painterResource(R.drawable.manga_placeholder),
         error = painterResource(R.drawable.manga_placeholder), contentScale = ContentScale.Crop)
 }

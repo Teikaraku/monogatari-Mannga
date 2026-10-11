@@ -61,7 +61,10 @@ private val otherSettings = listOf(
     Column {
         PageTitle(tr("ABOUT"), vm::back, contentWidth = ReadableWidth)
         Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant).verticalScroll(rememberScrollState())) {
-            SettingGroup { SettingRow(tr("VERSION"), value = app.monogatari.android.BuildConfig.VERSION_NAME) }
+            SettingGroup {
+                SettingRow(tr("VERSION"), value = app.monogatari.android.BuildConfig.VERSION_NAME)
+                SettingRow(pt("Check for updates", "检查更新"), onClick = { vm.updates.check(manual = true) })
+            }
             SettingGroup {
                 SettingRow(tr("GITHUB_REPO"), onClick = { vm.navigate("external", app.monogatari.android.AppBrand.REPOSITORY_URL) })
                 SettingRow("GNU GPL v3", onClick = { vm.navigate("licenses") }) }

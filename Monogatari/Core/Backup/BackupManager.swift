@@ -295,17 +295,6 @@ extension BackupManager {
             UIApplication.shared.isIdleTimerDisabled = true
         }
 
-        let sourceListsTask = Task {
-            await SourceManager.shared.waitForSourceListsLoad()
-            // restore source lists
-            guard let sourceLists = backup.sourceLists else { return }
-            await SourceManager.shared.clearSourceLists()
-            for sourceList in sourceLists {
-                guard let sourceListURL = URL(string: sourceList) else { continue }
-                _ = await SourceManager.shared.addSourceList(url: sourceListURL, allowUnavailable: true)
-            }
-        }
-
         let mangaTask = Task {
             if let backupManga = backup.manga {
                 let result = await CoreDataManager.shared.container.performBackgroundTask { context in
@@ -551,32 +540,7 @@ extension BackupManager {
                 }
             }
         }
-        let sourceTask = Task {
-            await sourceListsTask.value
-            if let sourceItems = backup.sources {
-                let (result, needsRefresh) = await CoreDataManager.shared.container.performBackgroundTask { context in
-                    var needsRefresh = false
-                    for item in sourceItems {
-                        guard item.config != nil else { continue }
-                        CoreDataManager.shared.removeSource(key: item.id, context: context)
-                        _ = item.toObject(context: context)
-                        needsRefresh = true
-                    }
-                    do {
-                        try context.save()
-                        return (true, needsRefresh)
-                    } catch {
-                        return (false, false)
-                    }
-                }
-                if !result {
-                    throw BackupError.sources
-                }
-                if needsRefresh {
-                    await SourceManager.shared.reloadSources()
-                }
-            }
-        }
+        // Sources come with the app, so a backup never adds source lists, configured sources or source packages.
 
         var backupError: Error?
 
@@ -586,7 +550,6 @@ extension BackupManager {
             try await sessionsTask.value
             try await vocabTask.value
             try await trackTask.value
-            try await sourceTask.value
         } catch {
             backupError = error
         }
@@ -598,47 +561,6 @@ extension BackupManager {
             await UIApplication.shared.appDelegate?.hideLoadingIndicator()
             UIApplication.shared.isIdleTimerDisabled = false
         }.value
-
-        if backupError == nil {
-            let externalSourceKeys = Set((backup.sources ?? []).lazy.filter { $0.config == nil }.map(\.id))
-            let missingSourceKeys = await SourceManager.shared.missingExternalSourceKeys(in: externalSourceKeys)
-
-            if
-                !missingSourceKeys.isEmpty,
-                Reachability.getConnectionType() != .none,
-                await confirmExternalSourceRestore(keys: missingSourceKeys)
-            {
-                await MainActor.run {
-                    UIApplication.shared.isIdleTimerDisabled = true
-                    UIApplication.shared.appDelegate?.showLoadingIndicator(
-                        style: .progress,
-                        message: NSLocalizedString("INSTALLING_SOURCES")
-                    )
-                }
-
-                var installedSourceKeys: Set<String> = []
-
-                if let (installedSourceKeyStream, total) = await SourceManager.shared.installExternalSources(keys: missingSourceKeys) {
-                    var current = 0
-                    for await key in installedSourceKeyStream {
-                        current += 1
-                        installedSourceKeys.insert(key)
-                        await UIApplication.shared.appDelegate?.updateLoadingIndicator(
-                            progress: Float(current - 1) / Float(total)
-                        )
-                    }
-                }
-
-                await restoreSettings(from: backup, sourceKeys: installedSourceKeys)
-
-                await Task { @MainActor in
-                    let appDelegate = UIApplication.shared.appDelegate
-                    appDelegate?.updateLoadingIndicator(progress: 1)
-                    await appDelegate?.hideLoadingIndicator()
-                    UIApplication.shared.isIdleTimerDisabled = false
-                }.value
-            }
-        }
 
         NotificationCenter.default.post(name: .updateHistory, object: nil)
         NotificationCenter.default.post(name: .updateTrackers, object: nil)
@@ -708,34 +630,6 @@ extension BackupManager {
         if needsMigrate {
             await MainActor.run {
                 UIApplication.shared.appDelegate?.migrateSettings()
-            }
-        }
-    }
-
-    private func confirmExternalSourceRestore(keys: Set<String>) async -> Bool {
-        let message = NSLocalizedString("RESTORE_MISSING_SOURCES_TEXT") + keys.sorted().map { "\n\($0)" }.joined()
-
-        return await withCheckedContinuation { continuation in
-            Task { @MainActor in
-                guard
-                    let delegate = UIApplication.shared.appDelegate,
-                    delegate.topViewController != nil
-                else {
-                    continuation.resume(returning: false)
-                    return
-                }
-                delegate.presentAlert(
-                    title: NSLocalizedString("RESTORE_MISSING_SOURCES"),
-                    message: message,
-                    actions: [
-                        UIAlertAction(title: NSLocalizedString("CANCEL"), style: .cancel) { _ in
-                            continuation.resume(returning: false)
-                        },
-                        UIAlertAction(title: NSLocalizedString("INSTALL_SOURCES"), style: .default) { _ in
-                            continuation.resume(returning: true)
-                        }
-                    ]
-                )
             }
         }
     }

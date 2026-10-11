@@ -48,11 +48,13 @@ class MonogatariViewModel(val repo: AppRepository, scheduleBackground: Boolean =
     private val progressScope = kotlinx.coroutines.CoroutineScope(progressJob + Dispatchers.IO)
     private var acceptsProgress = true
     private val sessions = app.monogatari.android.library.ReadingSessions(repo)
+    val updates = app.monogatari.android.update.AppUpdateController(repo, viewModelScope) { message = it }
     init {
         if (repo.loadError == null) {
             if (scheduleBackground) {
                 app.monogatari.android.library.LibraryRefresh.schedule(repo)
                 app.monogatari.android.backup.CompleteBackupManager.schedule(repo)
+                updates.check()
             }
             viewModelScope.launch {
                 try {

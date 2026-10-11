@@ -76,7 +76,10 @@ class CopySourceClient(val source: SourceConfig, http: OkHttpClient,
     private val contentBackups = (contentAlternates ?: if (contentApi.host == "www.manga2026.xyz") listOf(CopySource.CONTENT_BACKUP) else emptyList()).map(::checkedAddress)
     @Volatile private var preferredContent = if (contentAlternates == null && contentApi.host == "www.manga2026.xyz")
         checkedAddress(CopySource.CONTENT_BACKUP) else contentApi
-    private val imageHttp = http.newBuilder().followRedirects(true).followSslRedirects(false)
+    // Images use separate HTTP/1.1 connections and a short read timeout, so a stalled CDN connection holds up one
+    // image for seconds instead of every image sharing one HTTP/2 connection for a minute.
+    private val imageHttp = http.newBuilder().followRedirects(true).followSslRedirects(false).protocols(listOf(Protocol.HTTP_1_1))
+        .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS).readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
         .callTimeout(90, java.util.concurrent.TimeUnit.SECONDS).build()
     private val http = http.newBuilder().connectTimeout(minOf(http.connectTimeoutMillis.toLong(), 8000), java.util.concurrent.TimeUnit.MILLISECONDS)
         .readTimeout(minOf(http.readTimeoutMillis.toLong(), 20_000), java.util.concurrent.TimeUnit.MILLISECONDS).callTimeout(25, java.util.concurrent.TimeUnit.SECONDS).build()

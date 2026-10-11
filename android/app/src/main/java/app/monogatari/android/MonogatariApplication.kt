@@ -12,7 +12,10 @@ import okhttp3.OkHttpClient
 
 class MonogatariApplication : Application(), ImageLoaderFactory {
     override fun newImageLoader() = ImageLoader.Builder(this)
-        .components { add(SvgDecoder.Factory()); if (android.os.Build.VERSION.SDK_INT >= 28) add(ImageDecoderDecoder.Factory()) else add(GifDecoder.Factory()) }
+        .components {
+            add(SvgDecoder.Factory()); if (android.os.Build.VERSION.SDK_INT >= 28) add(ImageDecoderDecoder.Factory()) else add(GifDecoder.Factory())
+            add(app.monogatari.android.data.SourceCoverKeyer()); add(app.monogatari.android.data.SourceCoverFetcher.Factory())
+        }
         .memoryCache { MemoryCache.Builder(this).maxSizeBytes(100 * 1024 * 1024).build() }
         .diskCache { DiskCache.Builder().directory(cacheDir.resolve("image-cache")).maxSizeBytes(500L * 1024 * 1024).build() }
         // Credentials are added per request and must never follow redirects to a different host.

@@ -62,65 +62,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import okhttp3.HttpUrl.Companion.toHttpUrl
 
-@Composable fun SourceImportButton(vm: MonogatariViewModel) {
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) vm.run { val source = withContext(Dispatchers.IO) { vm.repo.client.runtimes.install(uri, retainPrevious = true) }; saveInstalled(vm, source) }
-    }
-    TextButton({ launcher.launch(arrayOf("application/zip", "application/octet-stream", "application/x-aidoku-source", "*/*")) }) { Text(tr("IMPORT_SOURCE")) }
-}
-
-internal suspend fun saveInstalled(vm: MonogatariViewModel, source: InstalledSource) {
-    try {
-    val boundary = source.manifest.optJSONObject("config")?.optInt("breakingChangeVersion", 0) ?: 0
-    if (source.previousVersion != null && source.previousVersion < boundary && source.version >= boundary) {
-        val mappings = withContext(Dispatchers.IO) {
-            val runtime = vm.repo.client.runtimes.runtime(source.id)
-            if ("handle_key_migration" in runtime.exports) {
-                val known=linkedMapOf<String,MutableSet<String>>()
-                fun remember(manga:String,chapter:String="") { if(manga.isBlank())return; val chapters=known.getOrPut(manga){linkedSetOf()};if(chapter.isNotBlank())chapters+=chapter }
-                vm.state.value.manga.filter { it.sourceId==source.id }.forEach { manga -> remember(manga.key);manga.chapters.forEach { remember(manga.key,it.key) } }
-                listOf(JSONObject(vm.state.value.records),JSONObject(vm.state.value.backupExtras)).forEach { data ->
-                    listOf("history","chapters","readingSessions","updates","vocabulary").forEach { name -> data.optJSONArray(name)?.values()?.filterIsInstance<JSONObject>()?.filter { it.optString("sourceId")==source.id }?.forEach { row ->
-                        remember(row.optString("mangaId"),row.optString(if(name=="chapters")"id" else "chapterId",row.optString("chapterKey")))
-                    } }
-                }
-                app.monogatari.android.downloads.DownloadService.get(vm.repo.context).entries.value.filter { it.sourceId==source.id }.forEach { remember(it.mangaId.removePrefix("${source.id}::"),it.chapterKey) }
-                app.monogatari.android.tracking.TrackingRepository.get(vm.repo.context).data.value.bindings.filter { it.mangaId.startsWith("${source.id}::") }.forEach { binding ->
-                    val key=binding.mangaId.removePrefix("${source.id}::");remember(key)
-                    binding.queuedPages().forEach { remember(key,it.key) }
-                }
-                app.monogatari.android.dictionary.DictionaryRepository.get(vm.repo.context).also { it.load() }.exportBackup().optJSONArray("vocabulary")?.values()?.filterIsInstance<JSONObject>()?.filter { it.optString("mangaId").startsWith("${source.id}::") }?.forEach { remember(it.getString("mangaId").removePrefix("${source.id}::"),it.optString("chapterKey")) }
-                known.mapValues { (manga,chapters) -> runtime.migrateKey(manga) to chapters.associateWith { runtime.migrateKey(manga,it) } }
-            } else emptyMap()
-        }
-        if (mappings.isNotEmpty()) {
-            vm.repo.migrateSourceKeys(source.id, mappings.mapValues { it.value.first }, mappings.mapValues { it.value.second },updatedSource=source.config)
-        }
-    }
-    } catch (e: Exception) { withContext(Dispatchers.IO) { vm.repo.client.runtimes.rollbackInstall(source) }; throw e }
-    if(vm.state.value.sources.none { it==source.config }) try {
-        vm.repo.change { state -> state.copy(sources = if (state.sources.any { it.id == source.id }) state.sources.map { if (it.id == source.id) source.config else it } else state.sources + source.config) }
-    } catch(error:Exception) { withContext(Dispatchers.IO) { vm.repo.client.runtimes.rollbackInstall(source) };throw error }
-    withContext(Dispatchers.IO) { vm.repo.client.runtimes.commitInstall(source) }
-}
-
-@Composable fun SourcePackageRow(vm: MonogatariViewModel, entry: CatalogSource) {
-    val state by vm.state.collectAsState()
-    val installed = state.sources.firstOrNull { it.id == entry.id }
-    val disabled = entry.id in vm.repo.settings.strings("Browse.disabledSources")
-    val version = remember(state.sources, entry.id, vm.busy) { runCatching { vm.repo.client.runtimes.installed(entry.id).version }.getOrDefault(-1) }
-    val canUpdate = installed != null && version < entry.version
-    Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-        AsyncImage(entry.icon, null, Modifier.size(40.dp)); Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) { Text(entry.name, fontWeight = FontWeight.Medium); Text(entry.languages.joinToString(" · ") { if (it == "multi") Localization.string(vm.repo.context, "MULTI_LANGUAGE") else java.util.Locale.forLanguageTag(it).getDisplayName(java.util.Locale.getDefault()) } + " · v${entry.version}", style = MaterialTheme.typography.bodySmall); if (entry.contentRating != 0) Text(tr(if (entry.contentRating == 1) "CONTAINS_NSFW" else "PRIMARILY_NSFW"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error) }
-        TextButton(enabled = !vm.busy && (disabled || (installed == null || canUpdate) && entry.downloadUrl.isNotEmpty()), onClick = {
-            if (disabled) vm.run { vm.repo.settings.put("Browse.disabledSources", JSONArray(vm.repo.settings.strings("Browse.disabledSources") - entry.id)) }
-            else vm.run { val source = withContext(Dispatchers.IO) { vm.repo.client.runtimes.install(entry.downloadUrl, entry.id, entry.version, retainPrevious = true) }; saveInstalled(vm, source) }
-        }) { Text(tr(if (disabled) "ENABLE" else if (canUpdate) "BUTTON_UPDATE" else if (installed != null) "INSTALLED" else "BUTTON_GET")) }
-    }
-    HorizontalDivider(Modifier.padding(start = 66.dp))
-}
-
 private class SourceBrowseMemory {
     val runtime = mutableStateOf<SourceSession?>(null)
     val home = mutableStateOf<JSONObject?>(null)

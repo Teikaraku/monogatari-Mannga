@@ -12,16 +12,6 @@
 	<array>
 		<dict>
 			<key>CFBundleTypeName</key>
-			<string>Monogatari Source</string>
-			<key>LSHandlerRank</key>
-			<string>Owner</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>app.monogatari.Monogatari.aix</string>
-			</array>
-		</dict>
-		<dict>
-			<key>CFBundleTypeName</key>
 			<string>Monogatari Backup</string>
 			<key>LSHandlerRank</key>
 			<string>Owner</string>

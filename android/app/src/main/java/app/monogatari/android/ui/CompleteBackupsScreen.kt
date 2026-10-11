@@ -103,7 +103,9 @@ import kotlinx.coroutines.withContext
     }
 }
 @Composable private fun BackupRestoreDialog(backup: BackupSummary, onDismiss: () -> Unit, restore: (RestoreOptions) -> Unit) {
-    val sections = remember(backup.file) { BackupSection.entries.filter { backup.format == BackupFormat.ANDROID_ZIP || it !in setOf(BackupSection.MEDIA, BackupSection.DICTIONARIES) } }
+    // Sources come with the app, so a backup never installs sources or adds source lists.
+    val sections = remember(backup.file) { BackupSection.entries.filter { it !in setOf(BackupSection.SOURCES, BackupSection.SOURCE_LISTS) &&
+        (backup.format == BackupFormat.ANDROID_ZIP || it !in setOf(BackupSection.MEDIA, BackupSection.DICTIONARIES)) } }
     var selected by remember(backup.file) { mutableStateOf(sections.toSet()) }; var merge by remember { mutableStateOf(false) }; var sensitive by remember { mutableStateOf(false) }; var confirmation by remember { mutableStateOf(false) }; var installSources by remember { mutableStateOf(false) }
     BackupDialog(tr("BACKUP_INFO_TITLE"), onDismiss, tr("RESTORE"), selected.isNotEmpty(), { confirmation = true },
         subtitle = "${backup.name} · ${DateFormat.getDateTimeInstance().format(Date(backup.date))}\n${backup.version} · ${size(backup.size)} · ${formatTitle(backup.format)}") {

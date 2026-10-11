@@ -85,10 +85,8 @@ import java.util.Locale
                         "details" -> DetailScreen(vm, state)
                         "reader" -> key(vm.chapterKey) { ReaderScreen(vm, state) }
                         "source" -> RuntimeSourceScreen(vm, vm.key)
-                        "sourceManager" -> NativeBrowseScreen(vm, state, ::startImport)
                         "copyCatalog" -> NativeCopyCatalogScreen(vm, state)
                         "sourceSettings" -> SourceSettingsScreen(vm, vm.key)
-                        "addSources" -> NativeAddSourcesScreen(vm, state, ::startImport)
                         "downloads" -> DownloadManagerScreen(vm, state)
                         "backups" -> CompleteBackupsScreen(vm)
                         "categories" -> CategoriesScreen(vm, state)
@@ -116,6 +114,7 @@ import java.util.Locale
             }
             vm.message?.let { message -> AlertDialog(onDismissRequest = { vm.message = null }, title = { Text(AppBrand.NAME) }, text = { Text(AppBrand.displayText(message)) },
                 confirmButton = { TextButton({ vm.message = null }) { Text(tr("OK")) } }) }
+            vm.updates.release?.let { release -> AppUpdateDialog(vm.updates, release) }
         }
     }
 }
