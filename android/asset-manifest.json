@@ -2,7 +2,7 @@
   "version": "0.9",
   "archive": {
     "name": "monogatari-build-assets-0.9.zip",
-    "url": "https://github.com/Teikaraku/monogatari-reader/releases/download/v0.9/monogatari-build-assets-0.9.zip",
+    "url": "https://github.com/Teikaraku/monogatari-reader/releases/download/build-assets/monogatari-build-assets-0.9.zip",
     "bytes": 71791857,
     "sha256": "59032fd7bc8e7f23785eeb1624a764fa4270e4d8b8e1ce0e0f5cfc0b9b56e3bc"
   },
@@ -51,7 +51,7 @@
   "originalModels": {
     "archive": {
       "name": "monogatari-model-sources-0.9.zip",
-      "url": "https://github.com/Teikaraku/monogatari-reader/releases/download/v0.9/monogatari-model-sources-0.9.zip",
+      "url": "https://github.com/Teikaraku/monogatari-reader/releases/download/build-assets/monogatari-model-sources-0.9.zip",
       "bytes": 32101808,
       "sha256": "f621071b6b888f16540c289ca74afa422a84078e98724e7231bb6f30662cbc28"
     },

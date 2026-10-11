@@ -1,4 +1,7 @@
-"""Package unchanged bundled reader models and record their exact release checksums."""
+"""Package the bundled reader models and record their checksums.
+
+Upload both archives to the `build-assets` pre-release; prepare-assets.py downloads them from there.
+"""
 from pathlib import Path
 import hashlib
 import json
@@ -13,13 +16,13 @@ def info(path):
 
 
 def package(base, paths, name):
-    output = ROOT / "deliverables" / name
-    output.parent.mkdir(exist_ok=True)
+    output = ROOT / "build" / "build-assets" / name
+    output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         for path in paths:
             archive.write(path, path.relative_to(base).as_posix())
     return {"archive": {"name": output.name,
-        "url": f"https://github.com/Teikaraku/monogatari-reader/releases/download/v0.9/{output.name}", **info(output)},
+        "url": f"https://github.com/Teikaraku/monogatari-reader/releases/download/build-assets/{output.name}", **info(output)},
         "files": [{"path": path.relative_to(base).as_posix(), **info(path)} for path in paths]}
 
 

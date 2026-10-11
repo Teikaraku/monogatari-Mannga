@@ -322,8 +322,6 @@ extension SettingsView {
             SettingsAboutView()
         } else if key == "Insights" {
             InsightsView()
-        } else if key == "SourceLists" {
-            SourceListsView()
         } else if key == "Backups" {
             BackupsView().environmentObject(path)
         } else if key == "Downloads" {

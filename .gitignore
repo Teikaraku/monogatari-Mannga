@@ -22,7 +22,6 @@ build/
 buildServer.json
 
 # Local development tools and generated reports
-.publish/
 **/__pycache__/
 *.pyc
 *.log

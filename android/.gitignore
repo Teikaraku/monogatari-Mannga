@@ -4,9 +4,4 @@ local.properties
 **/build/
 *.iml
 .idea/
-.reference/
-.tools/
 .asset-cache/
-verification/
-deliverables/
-/android/

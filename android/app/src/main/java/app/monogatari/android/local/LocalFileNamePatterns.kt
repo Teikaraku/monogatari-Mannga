@@ -1,6 +1,6 @@
 package app.monogatari.android.local
 
-// Exact ordered regular expressions from LocalFileNameParser.swift; regenerate with scripts/import-local-filename-parser.py.
+// Exact ordered regular expressions from LocalFileNameParser.swift.
 internal object LocalFileNamePatterns {
     val mangaSeriesPatterns=listOf(
         """(?<Series>.+?)(เล่ม|เล่มที่)(\s)?(\.?)(\s|_)?(?<Volume>\d+(\-\d+)?(\.\d+)?)""",
