@@ -1,0 +1,101 @@
+name: 构建 iPhone 安装包
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'Monogatari/**'
+      - 'MonogatariTests/**'
+      - 'Monogatari.xcodeproj/**'
+      - '.github/workflows/ios.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: 准备 iOS 平台
+        run: |
+          xcrun simctl list > /dev/null # fixes next command sometimes failing
+          xcodebuild -downloadPlatform iOS
+      - name: 编译（未签名）
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild -project Monogatari.xcodeproj -scheme Monogatari -configuration Release \
+            -destination 'generic/platform=iOS' archive -archivePath build/Monogatari.xcarchive \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGN_IDENTITY= CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee build/xcodebuild.log | if command -v xcbeautify > /dev/null; then xcbeautify --renderer github-actions; else cat; fi
+      - name: 检查首页、搜索备用地址、卷数排序和阅读限流处理
+        run: |
+          set -o pipefail
+          DEVICE=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin); rows=[x["udid"] for runtime,devices in sorted(d["devices"].items(),reverse=True) if ".iOS-" in runtime for x in devices if x["name"].startswith("iPhone") and x.get("isAvailable")]; print(rows[0])')
+          xcodebuild -project Monogatari.xcodeproj -scheme Monogatari -configuration Debug \
+            -destination "platform=iOS Simulator,id=$DEVICE" test \
+            -only-testing:MonogatariTests/CopySourceClientTests -parallel-testing-enabled NO \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGN_IDENTITY= CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee build/copy-source-tests.log | if command -v xcbeautify > /dev/null; then xcbeautify --renderer github-actions; else cat; fi
+      - name: 实测苹果原生网络、首页及阅读图片
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          DEVICE=$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for r,ds in sorted(d["devices"].items(),reverse=True) if ".iOS-" in r for x in ds if x["name"].startswith("iPhone") and x.get("isAvailable")))')
+          TEST_RUNNER_COPY_LIVE_SERVICE=1 xcodebuild -project Monogatari.xcodeproj -scheme Monogatari -configuration Debug \
+            -destination "platform=iOS Simulator,id=$DEVICE" test \
+            -only-testing:MonogatariTests/CopyLiveNetworkTests -parallel-testing-enabled NO \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGN_IDENTITY= CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee build/copy-live-network.log
+      - name: 保存原生网络实测记录
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: copy-network-verification
+          path: |
+            build/copy-source-tests.log
+            build/copy-live-network.log
+          if-no-files-found: ignore
+      - name: 打包 IPA
+        run: |
+          APP=build/Monogatari.xcarchive/Products/Applications/Monogatari.app
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
+          mkdir Payload
+          cp -R "$APP" Payload/
+          IPA="monogatari-ios-${VERSION}-unsigned.ipa"
+          zip -qry "$IPA" Payload
+          echo "IPA=$IPA" >> "$GITHUB_ENV"
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: monogatari-ios
+          path: ${{ env.IPA }}
+          if-no-files-found: error
+      - name: 汇总编译错误
+        if: failure()
+        run: |
+          [ -f build/xcodebuild.log ] || exit 0
+          # Annotations stay readable without signing in; each one carries a block of log lines.
+          summarize() {
+            sed -e 's/%/%25/g' -e 's/\r//g' | awk 'BEGIN{ORS="%0A"} {print}'
+          }
+          resolve=$(awk '/Could not resolve package dependencies/{f=1} f{print; if (++n>40) exit}' build/xcodebuild.log | summarize)
+          [ -n "$resolve" ] && echo "::error title=Package resolution::$resolve"
+          errors=$(grep -E "error:|\*\* ARCHIVE FAILED|Command .* failed" build/xcodebuild.log | grep -v "Could not resolve" | sort -u | head -60 | summarize)
+          [ -n "$errors" ] && echo "::error title=Build errors::$errors"
+          tail -n 30 build/xcodebuild.log | summarize | sed 's/^/::notice title=Log tail::/'
+          echo
+      - name: 上传编译日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: |
+            build/xcodebuild.log
+            build/copy-source-tests.log
+          if-no-files-found: ignore

@@ -1,0 +1,734 @@
+//
+//  BookstoreView.swift
+//  Monogatari
+//
+//  The bookstore tab. Layout and behaviour follow the Android bookstore (BookstoreScreens.kt):
+//  three picks fill one grid row, rankings read as a numbered chart with day/week/month tabs,
+//  the long update feed scrolls in two rows, and the short completed list stays a fixed grid.
+//
+
+import AidokuRunner
+import Combine
+import SwiftUI
+
+let bookstorePink = Color(uiColor: .systemPink)
+
+/// Window width of the bookstore pages; components size themselves from it instead of the screen.
+private struct BookstoreWidthKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 390
+}
+
+extension EnvironmentValues {
+    var bookstoreWidth: CGFloat {
+        get { self[BookstoreWidthKey.self] }
+        set { self[BookstoreWidthKey.self] = newValue }
+    }
+}
+
+/// Phones keep their layout. On iPads every shelf shares one centred content column, capped so covers keep a sensible
+/// size, and one six-column grid, so all shelves line up on both edges and no row is left half empty, as on Android.
+enum BookstoreLayout {
+    static let gap: CGFloat = 12
+    static func isWide(_ width: CGFloat) -> Bool { width >= 600 }
+    static func content(_ width: CGFloat) -> CGFloat { isWide(width) ? min(width - 40, 1120) : max(width - 40, 0) }
+    static func inset(_ width: CGFloat) -> CGFloat { max((width - content(width)) / 2, 20) }
+    static func gridColumns(_ width: CGFloat) -> Int { isWide(width) ? 6 : 3 }
+    static func span(_ width: CGFloat, _ count: Int, spacing: CGFloat = 12) -> CGFloat {
+        (content(width) - spacing * CGFloat(count - 1)) / CGFloat(count)
+    }
+    /// Banners and chart columns shown whole on one iPad screen.
+    static func perScreen(_ width: CGFloat) -> Int { width >= 1000 ? 3 : 2 }
+    static func bannerWidth(_ width: CGFloat) -> CGFloat { isWide(width) ? span(width, perScreen(width)) : min(max(width - 40, 0), 520) }
+    static func bannerHeight(_ width: CGFloat) -> CGFloat { isWide(width) ? bannerWidth(width) / 1.95 : max(bannerWidth(width) / 1.95, 190) }
+    static func rankWidth(_ width: CGFloat) -> CGFloat { isWide(width) ? span(width, perScreen(width), spacing: 16) : min(width * 0.8, 380) }
+}
+
+@MainActor
+final class BookstoreViewModel: ObservableObject {
+    @Published var home: CopyHome?
+    @Published var busy = false
+    @Published var error: String?
+
+    private let client = CopyClient()
+    private var task: Task<Void, Never>?
+
+    func refresh() {
+        task?.cancel()
+        busy = true
+        error = nil
+        task = Task {
+            do {
+                let result = try await client.home()
+                if !Task.isCancelled { home = result }
+            } catch {
+                if !Task.isCancelled { self.error = error.localizedDescription }
+            }
+            if !Task.isCancelled { busy = false }
+        }
+    }
+
+    func refreshAndWait() async {
+        refresh()
+        await task?.value
+    }
+}
+
+final class BookstoreViewController: UIHostingController<AnyView> {
+    private let model: BookstoreViewModel
+    private let coordinator: NavigationCoordinator
+
+    init() {
+        let model = BookstoreViewModel()
+        let coordinator = NavigationCoordinator(rootViewController: nil)
+        self.model = model
+        self.coordinator = coordinator
+        super.init(rootView: AnyView(BookstoreView(model: model).environmentObject(coordinator)))
+        coordinator.rootViewController = self
+        title = CopyClient.name
+        navigationItem.largeTitleDisplayMode = .always
+        navigationItem.rightBarButtonItems = [
+            UIBarButtonItem(title: "刷新", image: UIImage(systemName: "arrow.clockwise"), primaryAction: UIAction { [weak self] _ in
+                self?.model.refresh()
+            }),
+            UIBarButtonItem(title: NSLocalizedString("SEARCH"), image: UIImage(systemName: "magnifyingglass"), primaryAction: UIAction { [weak self] _ in
+                guard let self else { return }
+                self.coordinator.push(CopyCatalogView(mode: "search"), title: NSLocalizedString("SEARCH"))
+            })
+        ]
+    }
+
+    @MainActor required dynamic init?(coder aDecoder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
+struct BookstoreView: View {
+    @ObservedObject var model: BookstoreViewModel
+    @EnvironmentObject private var path: NavigationCoordinator
+
+    var body: some View {
+        GeometryReader { proxy in
+            content(width: proxy.size.width)
+                .environment(\.bookstoreWidth, proxy.size.width)
+        }
+    }
+
+    private func content(width: CGFloat) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                if let features = model.home?.features, !features.isEmpty {
+                    CopyFeaturePager(features: features)
+                } else if model.home == nil && model.error == nil {
+                    RoundedRectangle(cornerRadius: 18).fill(Color(uiColor: .secondarySystemBackground))
+                        .frame(width: BookstoreLayout.bannerWidth(width), height: BookstoreLayout.bannerHeight(width))
+                        .padding(.horizontal, BookstoreLayout.inset(width))
+                }
+                shortcuts(width: width)
+                if let error = model.error {
+                    CopyErrorView(message: error) { model.refresh() }
+                        .padding(.horizontal, BookstoreLayout.inset(width) - 16)
+                }
+                if let home = model.home {
+                    if let notice = home.notice {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(notice).font(.system(size: 13)).foregroundColor(.secondary)
+                            if let details = home.diagnostics {
+                                DisclosureGroup("查看加载详情") {
+                                    Text(details).font(.system(size: 12)).textSelection(.enabled)
+                                    Button("复制诊断信息") { UIPasteboard.general.string = details }
+                                }
+                                .font(.system(size: 13))
+                            }
+                        }
+                        .padding(.vertical, 16)
+                        .padding(.horizontal, BookstoreLayout.inset(width))
+                    }
+                    shelves(home, width: width)
+                } else if model.error == nil {
+                    CopyShelfPlaceholder()
+                }
+            }
+            .padding(.bottom, 28)
+        }
+        .refreshable { await model.refreshAndWait() }
+        .onAppear {
+            if model.home == nil && !model.busy { model.refresh() }
+        }
+    }
+
+    /// iPads get five equal tiles across the content column; phones keep the icon row.
+    private func shortcuts(width: CGFloat) -> some View {
+        let wide = BookstoreLayout.isWide(width)
+        return HStack(spacing: wide ? BookstoreLayout.gap : 0) {
+            shortcut("发现", "safari", "discover", wide: wide)
+            shortcut("分类", "square.grid.2x2", "categories", wide: wide)
+            shortcut("排行", "chart.bar.fill", "ranking", wide: wide)
+            shortcut("完结", "checkmark.seal", "finished", wide: wide)
+            shortcut("专题", "rectangle.stack", "topics", wide: wide)
+        }
+        .padding(.horizontal, wide ? BookstoreLayout.inset(width) : 12)
+        .padding(.vertical, 14)
+    }
+
+    private func shortcut(_ title: String, _ icon: String, _ mode: String, wide: Bool) -> some View {
+        Button {
+            openCatalog(mode)
+        } label: {
+            if wide {
+                HStack(spacing: 8) {
+                    Image(systemName: icon).font(.system(size: 19, weight: .medium)).foregroundColor(bookstorePink)
+                    Text(title).font(.system(size: 14, weight: .medium)).foregroundColor(.primary).lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, minHeight: 56)
+                .background(bookstorePink.opacity(0.06), in: RoundedRectangle(cornerRadius: 14))
+            } else {
+                VStack(spacing: 7) {
+                    Image(systemName: icon)
+                        .font(.system(size: 21, weight: .medium))
+                        .foregroundColor(bookstorePink)
+                        .frame(width: 44, height: 44)
+                        .background(bookstorePink.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+                    Text(title).font(.system(size: 12)).foregroundColor(.primary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func shelves(_ home: CopyHome, width: CGFloat) -> some View {
+        let sections = Dictionary(home.sections.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        if let section = sections["recComics"] {
+            CopyShelfHeader(title: section.title)
+            if BookstoreLayout.isWide(width) {
+                CopyPickRow(entries: Array(section.entries.prefix(3)))
+            } else {
+                CopyBookGrid(entries: Array(section.entries.prefix(6)))
+            }
+        }
+        if !home.rankings.isEmpty {
+            CopyRankingShelf(rankings: home.rankings)
+        } else if let section = sections["rankDayComics"] {
+            CopyShelfHeader(title: section.title) { openCatalog("ranking") }
+            CopyBookRow(entries: section.entries)
+        }
+        if let section = sections["hotComics"] {
+            CopyShelfHeader(title: section.title) { openCatalog("updates") }
+            CopyTwoRowShelf(entries: section.entries)
+        }
+        if let section = sections["newComics"] {
+            CopyShelfHeader(title: section.title) { openCatalog("newest") }
+            CopyBookRow(entries: section.entries)
+        }
+        if let section = sections["finishComics"] {
+            CopyShelfHeader(title: section.title) { openCatalog("finished") }
+            CopyBookGrid(entries: Array(section.entries.prefix(6)))
+        }
+        if !home.topics.isEmpty {
+            CopyShelfHeader(title: "精选专题") { openCatalog("topics") }
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 12) {
+                    ForEach(home.topics) { topic in
+                        Button {
+                            path.push(CopyCatalogView(mode: "topic", topicKey: topic.key), title: topic.title)
+                        } label: {
+                            CopyTopicBanner(topic: topic).frame(width: BookstoreLayout.isWide(width) ? BookstoreLayout.span(width, 3) : 264)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, BookstoreLayout.inset(width))
+            }
+        }
+    }
+
+    private func openCatalog(_ mode: String) {
+        path.push(CopyCatalogView(mode: mode), title: CopyCatalogView.title(for: mode))
+    }
+}
+
+// MARK: - Shared pieces
+
+struct CopyShelfHeader: View {
+    let title: String
+    var onMore: (() -> Void)?
+    @Environment(\.bookstoreWidth) private var width
+
+    var body: some View {
+        HStack(spacing: 10) {
+            RoundedRectangle(cornerRadius: 2).fill(bookstorePink).frame(width: 4, height: 19)
+            Text(title).font(.system(size: 20, weight: .bold))
+            Spacer()
+            if let onMore {
+                Button(action: onMore) {
+                    HStack(spacing: 2) {
+                        Text("更多").font(.system(size: 14))
+                        Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundColor(bookstorePink)
+                }
+            }
+        }
+        .padding(.leading, BookstoreLayout.inset(width))
+        .padding(.trailing, BookstoreLayout.inset(width) - 4)
+        .padding(.top, 22)
+        .padding(.bottom, 12)
+    }
+}
+
+struct CopyFeaturePager: View {
+    let features: [CopyFeature]
+    @EnvironmentObject private var path: NavigationCoordinator
+    @Environment(\.bookstoreWidth) private var width
+    @State private var page = 0
+    @State private var scrolledPage: Int? = 0
+    private let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        let height = BookstoreLayout.bannerHeight(width)
+        VStack(spacing: 10) {
+            if BookstoreLayout.isWide(width) {
+                // Wide windows show several phone-shaped banners side by side instead of one stretched banner.
+                ScrollViewReader { reader in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(spacing: 12) {
+                            ForEach(Array(features.enumerated()), id: \.offset) { index, feature in
+                                banner(feature).frame(width: BookstoreLayout.bannerWidth(width), height: height).id(index)
+                            }
+                        }
+                        .padding(.horizontal, BookstoreLayout.inset(width))
+                        .scrollTargetLayoutPlease()
+                    }
+                    .scrollViewAlignedPlease()
+                    .scrollPositionPlease(id: $scrolledPage, anchor: .leading)
+                    .onChange(of: page) { value in
+                        guard scrolledPage != value else { return }
+                        withAnimation { reader.scrollTo(value, anchor: .leading) }
+                    }
+                }
+                .frame(height: height)
+                .onChange(of: scrolledPage) { value in
+                    if let value { page = value }
+                }
+            } else {
+                TabView(selection: $page) {
+                    ForEach(Array(features.enumerated()), id: \.offset) { index, feature in
+                        banner(feature)
+                            .frame(height: height)
+                            .padding(.horizontal, 20)
+                            .tag(index)
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .frame(height: height)
+            }
+            HStack(spacing: 6) {
+                ForEach(features.indices, id: \.self) { index in
+                    Capsule()
+                        .fill(index == page ? bookstorePink : Color(uiColor: .systemGray4))
+                        .frame(width: index == page ? 16 : 6, height: 6)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .animation(.easeInOut(duration: 0.2), value: page)
+        }
+        .onReceive(timer) { _ in
+            guard features.count > 1 else { return }
+            withAnimation { page = (page + 1) % features.count }
+        }
+    }
+
+    private func banner(_ feature: CopyFeature) -> some View {
+        Button {
+            path.push(MangaViewController(source: .copyManga, manga: feature.comic.manga, parent: path.rootViewController))
+        } label: {
+            ZStack(alignment: .bottomLeading) {
+                Color(uiColor: .secondarySystemBackground)
+                    .overlay(SourceImageView(source: .copyManga, imageUrl: feature.image, placeholder: "BannerPlaceholder"))
+                    .clipped()
+                LinearGradient(colors: [.clear, .black.opacity(0.68)], startPoint: .top, endPoint: .bottom)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(feature.comic.manga.title).font(.system(size: 19, weight: .bold)).lineLimit(1)
+                    Text(feature.title).font(.system(size: 12)).opacity(0.9).lineLimit(2)
+                }
+                .foregroundColor(.white)
+                .padding(16)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Cover, title and a secondary line; update feeds overlay the newest chapter on the cover.
+struct CopyBookCard: View {
+    let comic: CopyComic
+    var titleLines = 2
+    var showLatest = false
+    @EnvironmentObject private var path: NavigationCoordinator
+
+    var body: some View {
+        Button {
+            path.push(MangaViewController(source: .copyManga, manga: comic.manga, parent: path.rootViewController))
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                Color(uiColor: .secondarySystemBackground)
+                    .aspectRatio(0.72, contentMode: .fit)
+                    .overlay(SourceImageView(source: .copyManga, imageUrl: comic.manga.cover ?? ""))
+                    .overlay(alignment: .bottomLeading) {
+                        if showLatest, let latest = comic.latestChapter {
+                            Text(latest)
+                                .font(.system(size: 11))
+                                .foregroundColor(.white)
+                                .lineLimit(1)
+                                .padding(.horizontal, 7)
+                                .padding(.top, 14)
+                                .padding(.bottom, 5)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(LinearGradient(colors: [.clear, .black.opacity(0.72)], startPoint: .top, endPoint: .bottom))
+                        }
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                Text(comic.manga.title)
+                    .font(.system(size: 14, weight: .medium))
+                    .lineLimit(titleLines)
+                    .multilineTextAlignment(.leading)
+                    .padding(.top, 7)
+                if let author = comic.manga.authors?.joined(separator: "、"), !author.isEmpty {
+                    Text(author).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(1)
+                }
+            }
+            .foregroundColor(.primary)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Three columns on phones; six across the content column on iPads, so the six-item shelves fill one row.
+struct CopyBookGrid: View {
+    let entries: [CopyComic]
+    var titleLines = 2
+    var showLatest = false
+    @Environment(\.bookstoreWidth) private var width
+
+    var body: some View {
+        let columns = BookstoreLayout.gridColumns(width)
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12, alignment: .top), count: columns), alignment: .leading, spacing: 16) {
+            ForEach(entries) { comic in
+                CopyBookCard(comic: comic, titleLines: titleLines, showLatest: showLatest)
+            }
+        }
+        .padding(.horizontal, BookstoreLayout.inset(width))
+    }
+}
+
+/// iPads give the three picks one row of wide cards instead of half a row of covers.
+struct CopyPickRow: View {
+    let entries: [CopyComic]
+    @EnvironmentObject private var path: NavigationCoordinator
+    @Environment(\.bookstoreWidth) private var width
+
+    var body: some View {
+        let card = BookstoreLayout.span(width, 3)
+        let cover = min(BookstoreLayout.span(width, 6), card * 0.4)
+        HStack(alignment: .top, spacing: BookstoreLayout.gap) {
+            ForEach(entries) { comic in
+                Button {
+                    path.push(MangaViewController(source: .copyManga, manga: comic.manga, parent: path.rootViewController))
+                } label: {
+                    HStack(alignment: .top, spacing: 12) {
+                        Color(uiColor: .tertiarySystemBackground)
+                            .frame(width: cover, height: cover / 0.72)
+                            .overlay(SourceImageView(source: .copyManga, imageUrl: comic.manga.cover ?? ""))
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(comic.manga.title)
+                                .font(.system(size: 16, weight: .semibold))
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                            if let author = comic.manga.authors?.joined(separator: "、"), !author.isEmpty {
+                                Text(author).font(.system(size: 12)).foregroundColor(.secondary).lineLimit(1).padding(.top, 4)
+                            }
+                            if let tags = comic.manga.tags, !tags.isEmpty {
+                                Text(tags.prefix(3).joined(separator: " · "))
+                                    .font(.system(size: 12))
+                                    .foregroundColor(bookstorePink)
+                                    .lineLimit(2)
+                                    .padding(.top, 8)
+                            }
+                            if let heat = comic.heat, heat > 0 {
+                                HStack(spacing: 2) {
+                                    Image(systemName: "flame").font(.system(size: 11)).foregroundColor(bookstorePink.opacity(0.8))
+                                    Text(CopyRankRow.heatText(heat)).font(.system(size: 11)).foregroundColor(.secondary)
+                                }
+                                .padding(.top, 8)
+                            }
+                        }
+                        .padding(.top, 2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(10)
+                    .frame(width: card, alignment: .leading)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+                    .foregroundColor(.primary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, BookstoreLayout.inset(width))
+    }
+}
+
+/// iPads show the feed as two full rows of the grid; phones scroll it.
+struct CopyBookRow: View {
+    let entries: [CopyComic]
+    @Environment(\.bookstoreWidth) private var width
+
+    var body: some View {
+        if BookstoreLayout.isWide(width) {
+            CopyBookGrid(entries: Array(entries.prefix(12)), showLatest: true)
+        } else {
+            row
+        }
+    }
+
+    private var row: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            LazyHStack(alignment: .top, spacing: 12) {
+                ForEach(entries) { comic in
+                    CopyBookCard(comic: comic, showLatest: true).frame(width: 108)
+                }
+            }
+            .padding(.horizontal, 20)
+        }
+    }
+}
+
+/// Two rows that scroll together, so the twelve-item update feed takes two screens instead of four; iPads show both rows whole.
+struct CopyTwoRowShelf: View {
+    let entries: [CopyComic]
+    @Environment(\.bookstoreWidth) private var width
+
+    var body: some View {
+        if BookstoreLayout.isWide(width) {
+            CopyBookGrid(entries: Array(entries.prefix(12)), titleLines: 1, showLatest: true)
+        } else {
+            shelf
+        }
+    }
+
+    private var shelf: some View {
+        let rows = entries.count > 3 ? 2 : 1
+        return ScrollView(.horizontal, showsIndicators: false) {
+            LazyHGrid(rows: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .top), count: rows), alignment: .top, spacing: 12) {
+                ForEach(entries) { comic in
+                    CopyBookCard(comic: comic, titleLines: 1, showLatest: true).frame(width: 104)
+                }
+            }
+            .padding(.horizontal, 20)
+        }
+    }
+}
+
+struct CopyRankingShelf: View {
+    let rankings: [CopyRanking]
+    @EnvironmentObject private var path: NavigationCoordinator
+    @Environment(\.bookstoreWidth) private var width
+    @State private var period = "day"
+
+    var body: some View {
+        let current = rankings.first { $0.period == period } ?? rankings[0]
+        // iPads fit the chart into whole columns on one screen; phones scroll three-row columns.
+        let columns = BookstoreLayout.perScreen(width)
+        let count = BookstoreLayout.isWide(width) ? (current.entries.count + columns - 1) / columns : current.entries.count
+        let rows = min(max(count, 1), 3)
+        VStack(alignment: .leading, spacing: 0) {
+            CopyShelfHeader(title: "排行榜") {
+                path.push(CopyCatalogView(mode: "ranking", topicKey: current.period), title: CopyCatalogView.title(for: "ranking"))
+            }
+            HStack(spacing: 8) {
+                ForEach(rankings) { ranking in
+                    CopyChip(title: ranking.title, selected: ranking.period == current.period, checkmark: false) { period = ranking.period }
+                }
+            }
+            .padding(.horizontal, BookstoreLayout.inset(width))
+            .padding(.bottom, 10)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHGrid(rows: Array(repeating: GridItem(.fixed(78), spacing: 8), count: rows), spacing: 16) {
+                    ForEach(Array(current.entries.enumerated()), id: \.element.id) { index, comic in
+                        CopyRankRow(comic: comic, position: index + 1)
+                            .frame(width: BookstoreLayout.rankWidth(width))
+                    }
+                }
+                .padding(.horizontal, BookstoreLayout.inset(width))
+            }
+            .id(current.period)
+        }
+    }
+}
+
+struct CopyRankRow: View {
+    let comic: CopyComic
+    let position: Int
+    @EnvironmentObject private var path: NavigationCoordinator
+
+    var body: some View {
+        let rank = (comic.rank ?? 0) > 0 ? comic.rank ?? position : position
+        Button {
+            path.push(MangaViewController(source: .copyManga, manga: comic.manga, parent: path.rootViewController))
+        } label: {
+            HStack(spacing: 0) {
+                Text("\(rank)")
+                    .font(.system(size: rank <= 3 ? 24 : 18, weight: .heavy).italic())
+                    .foregroundColor(rankColor(rank))
+                    .frame(width: 34)
+                Color(uiColor: .secondarySystemBackground)
+                    .frame(width: 54, height: 72)
+                    .overlay(SourceImageView(source: .copyManga, imageUrl: comic.manga.cover ?? ""))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(comic.manga.title).font(.system(size: 15, weight: .medium)).lineLimit(1)
+                    if let author = comic.manga.authors?.joined(separator: "、"), !author.isEmpty {
+                        Text(author).font(.system(size: 12)).foregroundColor(.secondary).lineLimit(1)
+                    }
+                    if let heat = comic.heat, heat > 0 {
+                        HStack(spacing: 2) {
+                            Image(systemName: "flame").font(.system(size: 11)).foregroundColor(bookstorePink.opacity(0.8))
+                            Text(Self.heatText(heat)).font(.system(size: 11)).foregroundColor(.secondary)
+                        }
+                    }
+                }
+                .padding(.leading, 12)
+                Spacer(minLength: 4)
+                if let previous = comic.previousRank, previous > 0, previous != rank {
+                    Image(systemName: rank < previous ? "arrowtriangle.up.fill" : "arrowtriangle.down.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(rank < previous ? bookstorePink : .secondary)
+                }
+            }
+            .frame(height: 78)
+            .foregroundColor(.primary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func rankColor(_ rank: Int) -> Color {
+        switch rank {
+            case 1: bookstorePink
+            case 2: Color(red: 1, green: 0.42, blue: 0.24)
+            case 3: Color(red: 1, green: 0.63, blue: 0.14)
+            default: .secondary
+        }
+    }
+
+    static func heatText(_ value: Int) -> String {
+        if value >= 100_000_000 { return String(format: "%.1f亿", Double(value) / 1e8) }
+        if value >= 10_000 { return String(format: "%.1f万", Double(value) / 1e4) }
+        return String(value)
+    }
+}
+
+struct CopyTopicBanner: View {
+    let topic: CopyTopic
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Color(uiColor: .secondarySystemBackground)
+                .aspectRatio(2.5, contentMode: .fit)
+                .overlay(SourceImageView(source: .copyManga, imageUrl: topic.fullImage, placeholder: "BannerPlaceholder"))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            Text(topic.title)
+                .font(.system(size: 14, weight: .medium))
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .padding(.top, 8)
+            if !topic.subtitle.isEmpty {
+                Text(topic.subtitle).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(1)
+            }
+        }
+        .foregroundColor(.primary)
+    }
+}
+
+/// Selected chips use the accent tint; excluded or unselected chips use the grouped fill, as on Android.
+struct CopyChip: View {
+    let title: String
+    let selected: Bool
+    var checkmark = true
+    var trailingIcon: String?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                if selected && checkmark && trailingIcon == nil {
+                    Image(systemName: "checkmark").font(.system(size: 12, weight: .semibold))
+                }
+                Text(title)
+                    .font(.system(size: 14, weight: selected ? .medium : .regular))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                if let trailingIcon {
+                    Image(systemName: trailingIcon).font(.system(size: 11, weight: .semibold))
+                }
+            }
+            .foregroundColor(selected ? bookstorePink : .primary)
+            .padding(.horizontal, 14)
+            .frame(minWidth: 56, minHeight: 36)
+            .background(
+                Capsule().fill(selected ? bookstorePink.opacity(0.1) : Color(uiColor: .secondarySystemBackground))
+            )
+            .overlay(Capsule().strokeBorder(selected ? bookstorePink.opacity(0.6) : .clear, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct CopyErrorView: View {
+    let message: String
+    let retry: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(message.components(separatedBy: "\n").first ?? message)
+                .font(.system(size: 13)).foregroundColor(.red)
+            if let separator = message.firstIndex(of: "\n") {
+                DisclosureGroup("查看加载详情") {
+                    Text(String(message[message.index(after: separator)...]))
+                        .font(.system(size: 12)).textSelection(.enabled)
+                }
+                .font(.system(size: 13))
+            }
+            Button("重试", action: retry).foregroundColor(bookstorePink)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        .padding(16)
+    }
+}
+
+struct CopyShelfPlaceholder: View {
+    @Environment(\.bookstoreWidth) private var width
+
+    var body: some View {
+        let tone = Color(uiColor: .secondarySystemBackground)
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(0..<2, id: \.self) { _ in
+                RoundedRectangle(cornerRadius: 6).fill(tone).frame(width: 96, height: 20).padding(.top, 18).padding(.bottom, 14)
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(0..<BookstoreLayout.gridColumns(width), id: \.self) { _ in
+                        VStack(alignment: .leading, spacing: 8) {
+                            RoundedRectangle(cornerRadius: 8).fill(tone).aspectRatio(0.72, contentMode: .fit)
+                            RoundedRectangle(cornerRadius: 4).fill(tone).frame(height: 12)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, BookstoreLayout.inset(width))
+    }
+}

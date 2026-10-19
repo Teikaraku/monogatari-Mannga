@@ -1,0 +1,118 @@
+{
+  "waifu2x_photo_noise0_scale2x.onnx": {
+    "samples": [
+      [
+        0,
+        0,
+        0,
+        0,
+        255
+      ],
+      [
+        1,
+        13,
+        2,
+        33,
+        2
+      ],
+      [
+        20,
+        20,
+        42,
+        20,
+        137
+      ],
+      [
+        47,
+        60,
+        122,
+        144,
+        25
+      ],
+      [
+        70,
+        70,
+        176,
+        169,
+        15
+      ],
+      [
+        95,
+        95,
+        229,
+        231,
+        37
+      ],
+      [
+        93,
+        4,
+        233,
+        4,
+        255
+      ]
+    ],
+    "input": "48x48 RGB: R=x*5 G=y*5 B=((x+y)%4==0?255:20); alpha=255",
+    "bias": 0.00196078411,
+    "halo": 7,
+    "normalization": "RGB NCHW /255 + half 8-bit step only real pixels; edge replicate without bias",
+    "quantization": "clip[0,255], truncate to UInt8"
+  },
+  "RealESRGAN_x2plus.onnx": {
+    "samples": [
+      [
+        0,
+        0,
+        10,
+        25,
+        62
+      ],
+      [
+        1,
+        13,
+        8,
+        31,
+        80
+      ],
+      [
+        20,
+        20,
+        45,
+        55,
+        87
+      ],
+      [
+        47,
+        60,
+        127,
+        153,
+        87
+      ],
+      [
+        70,
+        70,
+        168,
+        174,
+        88
+      ],
+      [
+        95,
+        95,
+        248,
+        236,
+        14
+      ],
+      [
+        93,
+        4,
+        248,
+        15,
+        101
+      ]
+    ],
+    "input": "48x48 RGB: R=x*5 G=y*5 B=((x+y)%4==0?255:20); alpha=255",
+    "bias": 0.00196078411,
+    "halo": 0,
+    "normalization": "RGB NCHW /255 + half 8-bit step only real pixels; edge replicate without bias",
+    "quantization": "clip[0,255], truncate to UInt8"
+  }
+}

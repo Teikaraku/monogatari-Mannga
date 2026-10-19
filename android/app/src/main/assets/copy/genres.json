@@ -1,0 +1,274 @@
+[
+  {
+    "id": "aiqing",
+    "name": "愛情"
+  },
+  {
+    "id": "huanlexiang",
+    "name": "歡樂向"
+  },
+  {
+    "id": "maoxian",
+    "name": "冒險"
+  },
+  {
+    "id": "qihuan",
+    "name": "奇幻"
+  },
+  {
+    "id": "baihe",
+    "name": "百合"
+  },
+  {
+    "id": "xiaoyuan",
+    "name": "校园"
+  },
+  {
+    "id": "kehuan",
+    "name": "科幻"
+  },
+  {
+    "id": "dongfang",
+    "name": "東方"
+  },
+  {
+    "id": "danmei",
+    "name": "耽美"
+  },
+  {
+    "id": "gedou",
+    "name": "格鬥"
+  },
+  {
+    "id": "teenslove",
+    "name": "TL"
+  },
+  {
+    "id": "shenghuo",
+    "name": "生活"
+  },
+  {
+    "id": "qingxiaoshuo",
+    "name": "轻小说"
+  },
+  {
+    "id": "qita",
+    "name": "其他"
+  },
+  {
+    "id": "xuanyi",
+    "name": "悬疑"
+  },
+  {
+    "id": "mengxi",
+    "name": "萌系"
+  },
+  {
+    "id": "shengui",
+    "name": "神鬼"
+  },
+  {
+    "id": "zhichang",
+    "name": "职场"
+  },
+  {
+    "id": "zhiyu",
+    "name": "治愈"
+  },
+  {
+    "id": "jiecao",
+    "name": "节操"
+  },
+  {
+    "id": "sige",
+    "name": "四格"
+  },
+  {
+    "id": "gaoxiao",
+    "name": "搞笑"
+  },
+  {
+    "id": "changtiao",
+    "name": "長條"
+  },
+  {
+    "id": "jingji",
+    "name": "竞技"
+  },
+  {
+    "id": "mohuan",
+    "name": "魔幻"
+  },
+  {
+    "id": "jianniang",
+    "name": "舰娘"
+  },
+  {
+    "id": "weiniang",
+    "name": "伪娘"
+  },
+  {
+    "id": "rexue",
+    "name": "热血"
+  },
+  {
+    "id": "jingsong",
+    "name": "惊悚"
+  },
+  {
+    "id": "meishi",
+    "name": "美食"
+  },
+  {
+    "id": "xingzhuanhuan",
+    "name": "性转换"
+  },
+  {
+    "id": "lizhi",
+    "name": "励志"
+  },
+  {
+    "id": "yinyuewudao",
+    "name": "音乐舞蹈"
+  },
+  {
+    "id": "hougong",
+    "name": "後宮"
+  },
+  {
+    "id": "zhentan",
+    "name": "侦探"
+  },
+  {
+    "id": "COLOR",
+    "name": "彩色"
+  },
+  {
+    "id": "aa",
+    "name": "AA"
+  },
+  {
+    "id": "yishijie",
+    "name": "异世界"
+  },
+  {
+    "id": "lishi",
+    "name": "历史"
+  },
+  {
+    "id": "chuanyue",
+    "name": "穿越"
+  },
+  {
+    "id": "jizhan",
+    "name": "机战"
+  },
+  {
+    "id": "zhanzheng",
+    "name": "战争"
+  },
+  {
+    "id": "dushi",
+    "name": "都市"
+  },
+  {
+    "id": "chongsheng",
+    "name": "重生"
+  },
+  {
+    "id": "comiket102",
+    "name": "C102"
+  },
+  {
+    "id": "kongbu",
+    "name": "恐怖"
+  },
+  {
+    "id": "shengcun",
+    "name": "生存"
+  },
+  {
+    "id": "comiket103",
+    "name": "C103"
+  },
+  {
+    "id": "comiket104",
+    "name": "C104"
+  },
+  {
+    "id": "comiket100",
+    "name": "C100"
+  },
+  {
+    "id": "wuxia",
+    "name": "武侠"
+  },
+  {
+    "id": "comiket101",
+    "name": "C101"
+  },
+  {
+    "id": "comiket99",
+    "name": "C99"
+  },
+  {
+    "id": "comiket97",
+    "name": "C97"
+  },
+  {
+    "id": "comiket105",
+    "name": "C105"
+  },
+  {
+    "id": "zhaixi",
+    "name": "宅系"
+  },
+  {
+    "id": "comiket96",
+    "name": "C96"
+  },
+  {
+    "id": "comiket106",
+    "name": "C106"
+  },
+  {
+    "id": "comiket107",
+    "name": "C107"
+  },
+  {
+    "id": "C98",
+    "name": "C98"
+  },
+  {
+    "id": "comiket95",
+    "name": "C95"
+  },
+  {
+    "id": "zhuansheng",
+    "name": "转生"
+  },
+  {
+    "id": "comiket108",
+    "name": "C108"
+  },
+  {
+    "id": "fate",
+    "name": "FATE"
+  },
+  {
+    "id": "Uncensored",
+    "name": "無修正"
+  },
+  {
+    "id": "xianxia",
+    "name": "仙侠"
+  },
+  {
+    "id": "loveLive",
+    "name": "LoveLive"
+  },
+  {
+    "id": "zazhifuzengxiezhenji",
+    "name": "雜誌附贈寫真集"
+  }
+]

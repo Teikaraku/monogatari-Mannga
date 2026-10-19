@@ -1,0 +1,34 @@
+* text=auto
+.gitignore text eol=lf
+.gitattributes text eol=lf
+*.strings text eol=lf
+*.plist text eol=lf
+*.entitlements text eol=lf
+*.pbxproj text eol=lf
+*.xcconfig text eol=lf
+*.xcworkspacedata text eol=lf
+*.xcscheme text eol=lf
+*.resolved text eol=lf
+*.svg text eol=lf
+*.kt text eol=lf
+*.kts text eol=lf
+*.swift text eol=lf
+*.json text eol=lf
+*.xml text eol=lf
+*.md text eol=lf
+*.py text eol=lf
+*.mjs text eol=lf
+*.yml text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+gradlew text eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.wasm binary
+*.jar binary
+*.zip binary
+*.epub binary
+*.cbz binary
+*.p12 binary

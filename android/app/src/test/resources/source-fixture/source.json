@@ -1,0 +1,10 @@
+{
+	"info": {
+		"id": "test",
+		"name": "Test",
+		"version": 1,
+		"url": "https://aidoku.app",
+		"contentRating": 0,
+		"languages": ["en"]
+	}
+}
