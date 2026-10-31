@@ -144,6 +144,17 @@ enum Settings {
                     icon: .system(name: "arrow.down.circle.fill", color: "blue", inset: 6)
                 ))
             )
+        ]))),
+        .init(title: NSLocalizedString("PROJECTS"), value: .group(.init(items: [
+            .init(
+                key: "MonogatariSeries",
+                title: NSLocalizedString("MONOGATARI_SERIES"),
+                value: .page(.init(
+                    items: [],
+                    inlineTitle: true,
+                    icon: .system(name: "square.grid.2x2.fill", color: "#FF2D55", inset: 6)
+                ))
+            )
         ])))
     ]
 }

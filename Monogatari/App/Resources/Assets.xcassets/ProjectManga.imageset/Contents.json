@@ -1,0 +1,12 @@
+{
+  "images" : [
+    {
+      "filename" : "project_manga.png",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

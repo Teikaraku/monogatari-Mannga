@@ -29,6 +29,23 @@ class MainActivity : FragmentActivity() {
         savedInstanceState?.let { model.restoreNavigation(it) }
         setContent { MonogatariApp(model) }
         if (savedInstanceState == null) importIntent(intent)
+        app.monogatari.android.account.AccountService.systemBrowser = { url ->
+            val callback = app.monogatari.android.account.BrowserCallback.expect()
+            browserSignIn = true
+            startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE))
+            callback.await()
+        }
+        app.monogatari.android.account.AccountSync.get(applicationContext).start()
+    }
+    /** A Google or GitHub sign-in is open in the browser; returning without its redirect cancels it. */
+    private var browserSignIn = false
+    override fun onResume() {
+        super.onResume()
+        if (browserSignIn) {
+            browserSignIn = false
+            // The redirect intent arrives before onResume; give it a moment in case it is still on its way.
+            window.decorView.postDelayed({ app.monogatari.android.account.BrowserCallback.abandon() }, 1_500)
+        }
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); importIntent(intent) }
     override fun onStart() {
@@ -40,6 +57,8 @@ class MainActivity : FragmentActivity() {
             app.monogatari.android.backup.CompleteBackupManager(model.repo).automaticIfDue()
             app.monogatari.android.library.LibraryRefresh.foregroundIfDue(model.repo)
         }
+        // Back in the foreground: pick up what other devices changed. (Launch syncs from start() in onCreate.)
+        if (!browserSignIn) app.monogatari.android.account.AccountSync.get(applicationContext).syncSoon(500)
     }
     override fun onStop() {
         if (::model.isInitialized && model.screen == "reader" && model.readerVisibleTotal > 0) model.readerChapter?.let {
@@ -49,6 +68,7 @@ class MainActivity : FragmentActivity() {
         if (app.monogatari.android.library.ForegroundActivities.stopped(this)) {
             if (::model.isInitialized) app.monogatari.android.library.LibraryRefresh.appStopped(model.repo)
             app.monogatari.android.downloads.DownloadService.get(applicationContext).setAppVisible(false)
+            app.monogatari.android.account.AccountSync.get(applicationContext).syncSoon(0)
         }
         super.onStop()
     }
@@ -68,6 +88,7 @@ class MainActivity : FragmentActivity() {
     }
     private fun importIntent(intent: Intent?) {
         if (intent == null) return
+        if (intent.action == Intent.ACTION_VIEW && intent.data?.let { app.monogatari.android.account.BrowserCallback.deliver(it.toString()) } == true) return
         if (intent.getBooleanExtra("monogatari.openUpdates", false)) {
             intent.removeExtra("monogatari.openUpdates"); model.navigate("updates"); return
         }

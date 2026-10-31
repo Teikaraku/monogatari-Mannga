@@ -1,0 +1,25 @@
+# 物语漫画 account sync (manga.monogatari.top/sync). Its own image, port and volume, apart from the
+# novel app's sync service and the app-update files served on the same site.
+name: monogatari-manga-sync
+
+services:
+  sync:
+    image: monogatari-manga-sync:latest
+    build: .
+    user: "10001:10001"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:58202:8080"
+    volumes:
+      - "/srv/monogatari-manga/sync-data:/sync"
+    environment:
+      SYNC_ISSUER: "https://auth.monogatari.top/oidc"
+      SYNC_AUDIENCE: "https://manga.monogatari.top/sync"
+      SYNC_JWKS_URL: "https://auth.monogatari.top/oidc/jwks"
+      SYNC_PUBLIC_BASE: "https://manga.monogatari.top"
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

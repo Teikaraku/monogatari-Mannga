@@ -33,13 +33,19 @@ class PublicSourceTests(unittest.TestCase):
         cls.text = text_files()
 
     def test_no_private_service_addresses_or_embedded_access_tokens(self):
+        # The 物语 account is public by design: its identity center and this app's sync service. Every
+        # other monogatari.top address (update mirrors, other services) stays out of the public source.
+        public = re.compile(r"https://auth\.monogatari\.top(?:/oidc(?:/jwks)?)?(?![\w.-])"
+                            r"|https://manga\.monogatari\.top(?:/sync(?:/avatars/)?)?(?![\w.-])"
+                            r"|https://novel\.monogatari\.top/sync(?![\w.-])", re.I)
         patterns = (
             re.compile(r"https?://[^\s/\"']*\.monogatari\.top\b", re.I),
             re.compile(r"\bgh[pousr]_[A-Za-z0-9]{25,}\b"),
             re.compile(r"\bgithub_pat_[A-Za-z0-9_]{30,}\b"),
             re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
         )
-        violations = [name for name, content in self.text.items() if any(pattern.search(content) for pattern in patterns)]
+        violations = [name for name, content in self.text.items()
+                      if any(pattern.search(public.sub("", content)) for pattern in patterns)]
         self.assertEqual(violations, [], "private address or credential marker found; values intentionally omitted")
 
     def test_production_trackers_have_no_literal_client_secrets(self):

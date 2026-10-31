@@ -1,0 +1,12 @@
+{
+  "images" : [
+    {
+      "filename" : "project_novel.png",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

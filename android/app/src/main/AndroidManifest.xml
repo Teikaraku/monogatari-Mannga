@@ -27,6 +27,13 @@
                 <data android:scheme="monogatari" />
                 <data android:scheme="aidoku" />
             </intent-filter>
+            <!-- 物语 account: Google and GitHub sign-in return here from the browser. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="app.monogatari.android" android:host="callback" />
+            </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

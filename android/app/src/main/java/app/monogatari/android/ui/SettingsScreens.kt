@@ -17,7 +17,7 @@ import app.monogatari.android.data.*
 import org.json.JSONArray
 import org.json.JSONObject
 
-private data class Setting(val route: String, val key: String, val title: String, val icon: ImageVector, val color: Color)
+private data class Setting(val route: String, val key: String, val title: String, val icon: ImageVector, val color: Color, val subtitle: String = "")
 private val primarySettings = listOf(
     Setting("setting", "Appearance", "APPEARANCE", Icons.Outlined.TextFields, Color(0xFF007AFF)),
     Setting("setting", "Library", "LIBRARY", Icons.Outlined.LibraryBooks, Pink),
@@ -30,20 +30,27 @@ private val otherSettings = listOf(
     Setting("insights", "", "INSIGHTS", Icons.Outlined.BarChart, Color(0xFF5856D6)),
     Setting("backups", "", "BACKUPS", Icons.Outlined.Storage, Pink),
     Setting("downloads", "", "DOWNLOADS", Icons.Outlined.Download, Color(0xFF007AFF)))
+private val projectSettings = listOf(
+    Setting("series", "MonogatariSeries", "MONOGATARI_SERIES", Icons.Outlined.Apps, Pink, subtitle = "MONOGATARI_SERIES_SUBTITLE"))
 @Composable fun SettingsScreen(vm: MonogatariViewModel, state: AppState) {
     var query by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("") }
     val schema = remember { JSONArray(vm.repo.context.assets.open("ios/settings-schema.json").bufferedReader().use { it.readText() }).objects() }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant)) {
         PageTitle(tr("SETTINGS"), contentWidth = ReadableWidth); SearchField(query, tr("SEARCH"), modifier = Modifier.readableWidth()) { query = it }
         LazyColumn {
+            if (query.isBlank()) item { AccountCard(vm) }
             item { SettingGroup { SettingRow(tr("INCOGNITO_MODE"), subtitle = tr("INCOGNITO_MODE_TEXT"), trailing = {
                 Switch(state.preferences.incognito, { checked -> vm.run { vm.repo.settings.put("General.incognitoMode", checked) } })
             }) } }
-            listOf(primarySettings, otherSettings).forEach { group -> item { SettingGroup {
-                group.filter { Localization.string(vm.repo.context, it.title).contains(query, true) }.forEach { s ->
-                    SettingRow(tr(s.title), s.icon, s.color, onClick = { vm.navigate(s.route, s.key) })
-                }
-            } } }
+            listOf("" to primarySettings, "" to otherSettings, "PROJECTS" to projectSettings).forEach { (title, group) ->
+                val visible = group.filter { Localization.string(vm.repo.context, it.title).contains(query, true) }
+                // Untitled groups keep their original empty card while searching; a titled one hides with its rows.
+                if (title.isEmpty() || visible.isNotEmpty()) item { SettingGroup(if (title.isEmpty()) "" else tr(title)) {
+                    visible.forEach { s ->
+                        SettingRow(tr(s.title), s.icon, s.color, subtitle = if (s.subtitle.isEmpty()) "" else tr(s.subtitle), onClick = { vm.navigate(s.route, s.key) })
+                    }
+                } }
+            }
             if (query.isNotBlank()) items(schema.filter { Localization.string(vm.repo.context, it.optString("titleKey")).contains(query, true) }.distinctBy { it.optString("key") }) { item ->
                 SettingGroup { SettingRow(tr(item.optString("titleKey")), subtitle = tr(item.optString("group").uppercase()), onClick = {
                     vm.navigate("originalSettings", item.optString("group") + "|" + item.optJSONArray("parentPages").strings().lastOrNull().orEmpty())

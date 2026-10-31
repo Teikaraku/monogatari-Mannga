@@ -67,7 +67,7 @@ fun Modifier.readableWidth(max: Dp = ReadableWidth): Modifier = fillMaxWidth().w
             Spacer(Modifier.weight(1f)); actions()
         }
         Text(title, Modifier.padding(start = 20.dp + inset, end = 20.dp + inset, bottom = 12.dp), fontSize = 34.sp, fontWeight = FontWeight.Bold,
-            maxLines = 2, overflow = TextOverflow.Ellipsis)
+            lineHeight = 40.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 @Composable fun SearchField(value: String, placeholder: String, onSearch: (() -> Unit)? = null, modifier: Modifier = Modifier, onChange: (String) -> Unit) {
@@ -214,15 +214,20 @@ fun Modifier.readableWidth(max: Dp = ReadableWidth): Modifier = fillMaxWidth().w
     }
 }
 @Composable fun SettingRow(title: String, icon: ImageVector? = null, color: Color = Pink, subtitle: String = "", value: String = "",
-    onClick: (() -> Unit)? = null, enabled: Boolean = true, trailing: (@Composable () -> Unit)? = null) {
-    Row(Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(enabled = enabled, onClick = onClick) else Modifier)
+    onClick: (() -> Unit)? = null, enabled: Boolean = true, trailing: (@Composable () -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null, titleColor: Color? = null) {
+    Row(Modifier.fillMaxWidth().then(when {
+        onLongClick != null -> Modifier.combinedClickable(enabled = enabled, onClick = onClick ?: {}, onLongClick = onLongClick)
+        onClick != null -> Modifier.clickable(enabled = enabled, onClick = onClick)
+        else -> Modifier
+    })
         .semantics { if (!enabled) disabled() }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
         if (icon != null) {
             Box(Modifier.size(29.dp).clip(RoundedCornerShape(7.dp)).background(color), contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(20.dp), tint = Color.White) }
             Spacer(Modifier.width(12.dp))
         }
         Column(Modifier.weight(1f)) {
-            Text(title, fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else .5f))
+            Text(title, fontSize = 16.sp, color = (titleColor ?: MaterialTheme.colorScheme.onSurface).copy(alpha = if (enabled) 1f else .5f))
             if (subtitle.isNotEmpty()) Text(subtitle, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 18.sp)
         }
         if (value.isNotEmpty()) Text(value, Modifier.widthIn(max = 180.dp), fontSize = 14.sp,
