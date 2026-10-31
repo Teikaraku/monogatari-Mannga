@@ -211,31 +211,35 @@ actor AccountService {
     func accessToken(forceRefresh: Bool = false) async throws -> String {
         guard let seen = tokens else { throw AccountError(code: "signed_out") }
         if !forceRefresh && !seen.expiresSoon(now()) { return seen.accessToken }
-        return try await serialized { [self] in
-            guard let current = tokens else { throw AccountError(code: "signed_out") }
-            // Another caller refreshed while this one waited.
-            if current != seen && !current.expiresSoon(now()) { return current.accessToken }
-            let next = try await refresh(current, resource: true)
-            tokens = AccountTokens(accessToken: next.accessToken, expiresAt: next.expiresAt, refreshToken: next.refreshToken,
-                                   idToken: next.idToken ?? current.idToken)
-            save(await MainActor.run { self.user.value })
-            return next.accessToken
-        }
+        return try await serialized { try await self.refreshSync(seen: seen) }
+    }
+
+    private func refreshSync(seen: AccountTokens) async throws -> String {
+        guard let current = tokens else { throw AccountError(code: "signed_out") }
+        // Another caller refreshed while this one waited.
+        if current != seen && !current.expiresSoon(now()) { return current.accessToken }
+        let next = try await refresh(current, resource: true)
+        tokens = AccountTokens(accessToken: next.accessToken, expiresAt: next.expiresAt, refreshToken: next.refreshToken,
+                               idToken: next.idToken ?? current.idToken)
+        save(await MainActor.run { self.user.value })
+        return next.accessToken
     }
 
     /// A token for the identity center's Account API, which takes only tokens issued without a resource.
     func accountApiToken(forceRefresh: Bool = false) async throws -> String {
         if !forceRefresh, let (token, expires) = accountToken, now() < expires.addingTimeInterval(-60) { return token }
-        return try await serialized { [self] in
-            guard let current = tokens else { throw AccountError(code: "signed_out") }
-            let next = try await refresh(current, resource: false)
-            // Keep the sync token; only the rotated refresh token moves on.
-            tokens = AccountTokens(accessToken: current.accessToken, expiresAt: current.expiresAt, refreshToken: next.refreshToken,
-                                   idToken: next.idToken ?? current.idToken)
-            save(await MainActor.run { self.user.value })
-            accountToken = (next.accessToken, next.expiresAt)
-            return next.accessToken
-        }
+        return try await serialized { try await self.refreshAccountApi() }
+    }
+
+    private func refreshAccountApi() async throws -> String {
+        guard let current = tokens else { throw AccountError(code: "signed_out") }
+        let next = try await refresh(current, resource: false)
+        // Keep the sync token; only the rotated refresh token moves on.
+        tokens = AccountTokens(accessToken: current.accessToken, expiresAt: current.expiresAt, refreshToken: next.refreshToken,
+                               idToken: next.idToken ?? current.idToken)
+        save(await MainActor.run { self.user.value })
+        accountToken = (next.accessToken, next.expiresAt)
+        return next.accessToken
     }
 
     private func refresh(_ current: AccountTokens, resource: Bool) async throws -> AccountTokens {

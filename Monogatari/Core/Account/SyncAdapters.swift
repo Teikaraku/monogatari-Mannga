@@ -22,7 +22,7 @@ struct LibraryAdapter: SyncAdapter {
     func scan() -> [LocalItem] {
         CoreDataManager.shared.getLibraryManga(context: context).compactMap { library in
             guard let manga = library.manga, manga.sourceId != localSource else { return nil }
-            let categories = ((library.categories as? Set<CategoryObject>) ?? []).filter { !$0.group }.map(\.title).sorted()
+            let categories = ((library.categories as? Set<CategoryObject>) ?? []).filter { !$0.group }.compactMap(\.title).sorted()
             return LocalItem(key: syncKey(manga.sourceId, manga.id), data: [
                 "source": manga.sourceId, "manga": manga.id, "title": manga.title, "cover": manga.cover ?? "",
                 "categories": categories, "added": millis(library.dateAdded)
@@ -124,8 +124,9 @@ struct CategoryAdapter: SyncAdapter {
     private var plain: [CategoryObject] { CoreDataManager.shared.getCategories(sorted: true, context: context).filter { !$0.group } }
 
     func scan() -> [LocalItem] {
-        plain.enumerated().map { index, category in
-            LocalItem(key: syncKey(category.title), data: ["title": category.title, "sort": index], updated: nil)
+        plain.enumerated().compactMap { index, category in
+            guard let title = category.title else { return nil }
+            return LocalItem(key: syncKey(title), data: ["title": title, "sort": index], updated: nil)
         }
     }
 
@@ -145,7 +146,7 @@ struct CategoryAdapter: SyncAdapter {
     }
 
     func remove(_ key: String) {
-        guard let title = plain.first(where: { syncKey($0.title) == key })?.title else { return }
+        guard let title = plain.first(where: { $0.title.map { syncKey($0) } == key })?.title else { return }
         CoreDataManager.shared.removeCategory(title: title, context: context)
     }
 }
